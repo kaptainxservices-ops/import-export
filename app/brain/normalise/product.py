@@ -197,8 +197,31 @@ def _find_ean(raw: str) -> str | None:
     return match.group("ean") if match else None
 
 
-def _clean_ean(value: str | None) -> str | None:
+def normalise_gtin(value: str | None) -> str | None:
+    """Reduce any barcode form to a canonical GTIN, or None if it is not one.
+
+    Everything that can be is expressed as GTIN-13, because suppliers are inconsistent
+    about which form they send and identity has to survive that. A US supplier's 12-digit
+    UPC and a European supplier's 13-digit EAN describe the same physical product; left
+    unpadded they would key as two different offers and never match, which defeats the
+    whole point of using the barcode as identity.
+
+        12 digits (UPC-A)          -> left-padded to 13
+        14 digits with a leading 0 -> the trailing 13
+        8 digits (GTIN-8)          -> kept as-is
+    """
     if not value:
         return None
+
     digits = re.sub(r"\D", "", str(value))
+
+    if len(digits) == 14 and digits.startswith("0"):
+        digits = digits[1:]
+    if len(digits) == 12:
+        digits = "0" + digits
+
     return digits if len(digits) in (8, 13) else None
+
+
+def _clean_ean(value: str | None) -> str | None:
+    return normalise_gtin(value)

@@ -102,6 +102,19 @@ def test_ean_column_beats_the_line():
     assert spec.ean == "0195950643701"
 
 
+def test_upc_and_ean_for_the_same_product_key_identically():
+    """A US supplier sends a 12-digit UPC, a European one the 13-digit EAN, for the
+    same physical product. Left unpadded they would never match each other — which
+    defeats the entire point of using the barcode as identity."""
+    upc = parse_product("Some product", ean="195950643701")
+    ean = parse_product("Some product", ean="0195950643701")
+    assert upc.identity_key() == ean.identity_key()
+
+
+def test_fourteen_digit_padded_barcode_is_reduced():
+    assert parse_product("x", ean="00195950643701").ean == "0195950643701"
+
+
 def test_excel_apostrophe_prefix_is_stripped():
     """SELTE exports EANs as '6901443360147 so Excel does not mangle them."""
     assert parse_product("Smart fitness watch", ean="'6901443360147 ").ean == "6901443360147"
