@@ -20,7 +20,7 @@ def _isolate_settings(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setenv("INGEST_TOKEN", TEST_TOKEN)
     monkeypatch.setenv("ANTHROPIC_API_KEY", "")
     monkeypatch.setenv("SUPABASE_URL", "")
-    monkeypatch.setenv("SUPABASE_SERVICE_ROLE_KEY", "")
+    monkeypatch.setenv("SUPABASE_SECRET_KEY", "")
 
     get_settings.cache_clear()
     yield

@@ -26,9 +26,11 @@ and a policy comparing `tenant_id` to the signed-in user's tenant. If isolation 
 enforced in application code, one forgotten `WHERE` clause would leak a broker's
 supplier prices to a competitor. Here, a forgotten `WHERE` returns nothing instead.
 
-The backend connects with the **service role key, which bypasses RLS entirely**. That
-is intended — it has to write for every tenant. It is also exactly why that key lives
-only in Render's environment and never reaches a browser.
+The backend connects with the **secret key** (`sb_secret_…`, formerly called the
+service role key), **which bypasses RLS entirely**. That is intended — it has to write
+for every tenant. It is also exactly why that key lives only in `.env` and Render's
+environment, and never reaches a browser. The **publishable key** (`sb_publishable_…`)
+is the one the React dashboard uses, and it is safe there only because RLS is on.
 
 **Identity excludes price and quantity.** `offers.identity_key` is a generated column
 over model, storage, colour, grade and region code. The same lot at a new price is the

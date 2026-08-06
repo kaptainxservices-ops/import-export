@@ -28,9 +28,10 @@ class Settings(BaseSettings):
     classify_model: str = "claude-haiku-4-5-20251001"
     extract_model: str = "claude-sonnet-5"
 
-    # Supabase
+    # Supabase. supabase_secret_key is the sb_secret_... key, formerly service_role:
+    # it bypasses row-level security and must never reach the frontend.
     supabase_url: str = ""
-    supabase_service_role_key: str = ""
+    supabase_secret_key: str = ""
 
     # Monitoring
     sentry_dsn: str = ""
