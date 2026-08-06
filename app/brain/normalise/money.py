@@ -41,9 +41,7 @@ _WORDS = {
 
 _AMBIGUOUS_SYMBOL = re.compile(r"[$]")
 
-_PRICE = re.compile(
-    r"(?<![\d.])(?P<n>\d{1,3}(?:,\d{3})+(?:\.\d{1,2})?|\d+(?:\.\d{1,2})?)(?![\d])"
-)
+_NUMERIC = re.compile(r"\d[\d.,\s ]*\d|\d")
 
 _INCOTERMS = ["EXW", "FCA", "FOB", "CIF", "CFR", "CPT", "CIP", "DAP", "DPU", "DDP", "DDU"]
 
@@ -102,17 +100,79 @@ def normalise_currency(raw: str | None, default: str | None = None) -> str | Non
     return None
 
 
-def parse_price(raw: str | None) -> float | None:
-    """Extract a price. Handles '1,234.50', '905', 'USD 905.00', '$ 905'."""
+def parse_price(raw: str | None, decimal_hint: str | None = None) -> float | None:
+    """Extract a price, handling both Anglo and European number formats.
+
+    Both conventions appear in the same inbox, often in the same week, so this cannot
+    be a global setting. The separator role is decided per value:
+
+        1,234.50   both separators -> the rightmost is the decimal    -> 1234.50
+        109,50     one separator, 2 digits after   -> decimal         -> 109.50
+        1.079      one separator, 3 digits after   -> thousands       -> 1079.00
+        12,500     one separator, 3 digits after   -> thousands       -> 12500.00
+        15.4705199 one separator, 4+ digits after  -> decimal         -> 15.47
+
+    The three-digit case is the genuinely ambiguous one — '1,079' could be 1079 or
+    1.079 — and it is read as thousands, because a four-figure price is far more
+    plausible in this trade than a one-euro phone. `decimal_hint` ('comma' or 'dot')
+    overrides that when a supplier's convention is known.
+
+    This matters more than it looks: reading €1,079 as €1.07 does not present as a
+    parsing failure. It presents as an extraordinary margin, which is exactly the kind
+    of number a broker acts on before checking.
+    """
     if not raw:
         return None
 
-    match = _PRICE.search(raw.replace(" ", ""))
+    match = _NUMERIC.search(raw)
     if not match:
         return None
 
+    token = re.sub(r"[\s ]", "", match.group(0)).strip(".,")
+    if not token or not any(c.isdigit() for c in token):
+        return None
+
+    value = _interpret(token, decimal_hint)
+    return value
+
+
+def _interpret(token: str, decimal_hint: str | None) -> float | None:
+    has_dot = "." in token
+    has_comma = "," in token
+
+    if not has_dot and not has_comma:
+        return _to_float(token)
+
+    if has_dot and has_comma:
+        # Whichever appears last is the decimal point; the other groups thousands.
+        decimal_sep = "." if token.rfind(".") > token.rfind(",") else ","
+        return _split_on(token, decimal_sep)
+
+    sep = "." if has_dot else ","
+
+    if decimal_hint == "comma":
+        return _split_on(token, ",") if has_comma else _to_float(token.replace(".", ""))
+    if decimal_hint == "dot":
+        return _split_on(token, ".") if has_dot else _to_float(token.replace(",", ""))
+
+    if token.count(sep) > 1:
+        # '1.234.567' — repeated separators can only be grouping.
+        return _to_float(token.replace(sep, ""))
+
+    tail = token.split(sep)[1]
+    if len(tail) == 3:
+        return _to_float(token.replace(sep, ""))
+    return _split_on(token, sep)
+
+
+def _split_on(token: str, decimal_sep: str) -> float | None:
+    other = "," if decimal_sep == "." else "."
+    return _to_float(token.replace(other, "").replace(decimal_sep, "."))
+
+
+def _to_float(text: str) -> float | None:
     try:
-        return float(match.group("n").replace(",", ""))
+        return float(text)
     except ValueError:
         return None
 

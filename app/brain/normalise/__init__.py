@@ -16,6 +16,7 @@ it in seconds. A guess silently corrupts a price the client then trades on.
 abandon the other 499 rows.
 """
 
+from app.brain.normalise.brands import detect_brand, detect_category
 from app.brain.normalise.colours import normalise_colour
 from app.brain.normalise.grades import normalise_grade
 from app.brain.normalise.models import normalise_model
@@ -26,14 +27,21 @@ from app.brain.normalise.money import (
     normalise_currency,
     parse_price,
 )
+from app.brain.normalise.product import ProductSpec, parse_product
 from app.brain.normalise.quantity import parse_quantity
 from app.brain.normalise.regions import normalise_region_code
 from app.brain.normalise.storage import normalise_storage_gb
+from app.brain.normalise.variants import Variant, expand_variants
 
 __all__ = [
+    "ProductSpec",
+    "Variant",
+    "detect_brand",
+    "detect_category",
     "detect_incoterm",
     "detect_price_basis",
     "detect_vat_included",
+    "expand_variants",
     "normalise_colour",
     "normalise_currency",
     "normalise_grade",
@@ -41,5 +49,6 @@ __all__ = [
     "normalise_region_code",
     "normalise_storage_gb",
     "parse_price",
+    "parse_product",
     "parse_quantity",
 ]

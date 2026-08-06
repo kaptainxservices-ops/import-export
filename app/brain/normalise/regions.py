@@ -35,7 +35,22 @@ _CODES = {
     "BR": "BR/A",   # Brazil
 }
 
-# Only phrasings the trade uses as a direct synonym for a code.
+# The vocabulary these suppliers actually use. The Apple /A part codes appear in the
+# original specification but nowhere in the real sample; what the lists genuinely
+# distinguish is EU versus non-EU, and India as a separate market. Both sets are kept:
+# the /A codes cost nothing and may appear from other suppliers.
+_MARKET_PHRASES = {
+    "non eu": "NON-EU",
+    "non-eu": "NON-EU",
+    "noneu": "NON-EU",
+    "india spec": "INDIA",
+    "indian spec": "INDIA",
+    "eu spec": "EU",
+    "euro spec": "EU",
+    "european spec": "EU",
+}
+
+# Only phrasings the trade uses as a direct synonym for an Apple part code.
 _PHRASES = {
     "us spec": "LL/A",
     "usa spec": "LL/A",
@@ -62,12 +77,30 @@ _SQUASHED = re.compile(r"\b([A-Z]{1,2})A\b")
 
 
 def normalise_region_code(raw: str | None) -> str | None:
+    """Canonical market or Apple region code, or None when the text does not state one.
+
+    A warehouse location is not a market. 'Shipping from Hong Kong' says where the
+    goods sit, not which market they are built for, and treating one as the other is a
+    real customer dispute — a Japanese unit whose camera shutter cannot be silenced is
+    not an EU unit.
+    """
     if not raw:
         return None
 
     text = re.sub(r"\s+", " ", raw).strip()
     if not text:
         return None
+
+    lowered_all = text.lower()
+    # 'NON EU' must be tested before 'EU', or every non-EU line reads as EU.
+    for phrase in sorted(_MARKET_PHRASES, key=len, reverse=True):
+        if re.search(rf"(?<![a-z]){re.escape(phrase)}(?![a-z])", lowered_all):
+            return _MARKET_PHRASES[phrase]
+
+    if re.search(r"(?<![a-z])non[\s-]?eu(?![a-z])", lowered_all):
+        return "NON-EU"
+    if re.search(r"(?<![a-z])eu(?![a-z])", lowered_all):
+        return "EU"
 
     match = _CODE_PATTERN.search(text)
     if match:
