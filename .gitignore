@@ -1,0 +1,37 @@
+# Secrets — this entry exists before any .env file does
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
+# Client data — real emails and attachments never go to git
+samples/**
+!samples/README.md
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+dist/
+build/
+*.egg-info/
+
+# Node
+node_modules/
+dist/
+.vercel/
+.next/
+
+# Editors / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+desktop.ini
