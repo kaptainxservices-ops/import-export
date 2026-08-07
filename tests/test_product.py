@@ -102,6 +102,22 @@ def test_ean_column_beats_the_line():
     assert spec.ean == "0195950643701"
 
 
+def test_colour_column_separates_products_the_description_cannot():
+    """Masterfone lists colour in its own column and never repeats it in the
+    description. Ignoring it collapsed 27% of that supplier's rows into duplicate
+    identities, so two of every three finishes silently vanished into the first."""
+    black = parse_product("Echo Spot 2024 speaker", colour="black")
+    blue = parse_product("Echo Spot 2024 speaker", colour="blue")
+
+    assert black.colour == "Black"
+    assert black.identity_key() != blue.identity_key()
+
+
+def test_colour_column_beats_the_description():
+    spec = parse_product("iPhone 15 128GB Black", colour="Blue")
+    assert spec.colour == "Blue"
+
+
 def test_upc_and_ean_for_the_same_product_key_identically():
     """A US supplier sends a 12-digit UPC, a European one the 13-digit EAN, for the
     same physical product. Left unpadded they would never match each other — which

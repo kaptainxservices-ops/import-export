@@ -55,6 +55,7 @@ class TableRow:
 
     description: str
     ean: str | None = None
+    colour: str | None = None
     quantity: int | None = None
     price: float | None = None
     currency: str | None = None
@@ -194,6 +195,9 @@ def _build_row(
     return TableRow(
         description=description,
         ean=_clean_ean(cell("ean")),
+        # Sheets that give colour its own column do not repeat it in the description,
+        # so ignoring it collapses every finish of a product into one identity.
+        colour=cell("colour") or None,
         quantity=quantity,
         price=price,
         currency=row_currency,

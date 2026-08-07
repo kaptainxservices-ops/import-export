@@ -131,7 +131,7 @@ def main(root: Path) -> int:
                 if row.section:
                     stats["from_section"] += 1
 
-                spec = parse_product(row.description, ean=row.ean)
+                spec = parse_product(row.description, ean=row.ean, colour=row.colour)
                 if spec.capacity_gb:
                     stats["capacity"] += 1
                 if spec.category:

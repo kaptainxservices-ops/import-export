@@ -88,8 +88,19 @@ class ProductSpec:
         return "spec:" + "|".join(parts)
 
 
-def parse_product(text: str | None, ean: str | None = None) -> ProductSpec:
-    """Parse one product line. Never raises — a bad line yields an empty spec."""
+def parse_product(
+    text: str | None,
+    ean: str | None = None,
+    colour: str | None = None,
+) -> ProductSpec:
+    """Parse one product line. Never raises — a bad line yields an empty spec.
+
+    `colour` is the value from a dedicated colour column, and it takes precedence over
+    anything read out of the description. Sheets that separate colour out do not repeat
+    it in the description, so without this the three rows 'Echo Spot 2024 speaker' in
+    black, blue and white all reduce to one identity — and two of the three vanish into
+    the third. Masterfone's list alone loses 27% of its rows that way.
+    """
     if not text or not text.strip():
         return ProductSpec(warnings=["empty line"])
 
@@ -97,7 +108,7 @@ def parse_product(text: str | None, ean: str | None = None) -> ProductSpec:
 
     resolved_ean = _clean_ean(ean) or _find_ean(raw)
     ram, capacity, capacity_warning = _parse_ram_and_capacity(raw)
-    colour = _find_colour(raw)
+    resolved_colour = normalise_colour(colour) if colour else _find_colour(raw)
 
     network_match = _NETWORK.search(raw)
     warnings = [capacity_warning] if capacity_warning else []
@@ -108,7 +119,7 @@ def parse_product(text: str | None, ean: str | None = None) -> ProductSpec:
         ean=resolved_ean,
         capacity_gb=capacity,
         ram_gb=ram,
-        colour=colour,
+        colour=resolved_colour,
         network=network_match.group(1).upper() if network_match else None,
         dual_sim=True if _DUAL_SIM.search(raw) else None,
         edition="Enterprise Edition" if _EDITION.search(raw) else None,
