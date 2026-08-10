@@ -46,7 +46,15 @@ configuration from the repo rather than having it typed into a form and forgotte
    Expect `202`. Without the header, expect `401` — worth checking, because that
    endpoint is a public URL and the token is the only thing in front of it.
 
-## Two things that bite
+## Three things that bite
+
+**Render defaults to a Python version the dependencies have no wheels for.** At the
+time of writing it builds with 3.14, and `pydantic-core` publishes no 3.14 wheel — so
+pip tries to compile it from Rust source and dies on Render's read-only cargo registry.
+The error names `pydantic-core` and looks like a broken package; it is not. The repo
+pins `3.11.9` in `.python-version`, which Render reads automatically. Setting
+`PYTHON_VERSION` in the dashboard as well does no harm.
+
 
 **Liveness and readiness are separate on purpose.** Render restarts a service whose
 health check fails. If `/health` depended on Supabase, a brief Supabase outage would

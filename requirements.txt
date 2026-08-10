@@ -1,3 +1,7 @@
+# Python version is pinned in .python-version, and it matters here. Render now defaults
+# to 3.14, for which pydantic-core has no prebuilt wheel — pip then tries to compile it
+# from Rust source and fails, because Render's build sandbox has a read-only cargo
+# registry. The error names pydantic-core, but the cause is the interpreter.
 fastapi==0.115.6
 uvicorn[standard]==0.34.0
 pydantic==2.10.4
