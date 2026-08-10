@@ -4,8 +4,11 @@
 # registry. The error names pydantic-core, but the cause is the interpreter.
 fastapi==0.115.6
 uvicorn[standard]==0.34.0
-pydantic==2.10.4
-pydantic-settings==2.7.0
+# supabase 2.31 brings realtime 2.31, which requires pydantic >= 2.11.7. Pinning 2.10.4
+# made the whole set unresolvable. These three versions were resolved together rather
+# than bumped one at a time.
+pydantic==2.13.4
+pydantic-settings==2.15.0
 anthropic==0.42.0
 # 2.11 predates Supabase's new API key format: it validates that the key looks like a
 # JWT, so an sb_secret_... key is rejected as "Invalid API key" before any request is
