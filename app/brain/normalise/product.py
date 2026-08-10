@@ -68,6 +68,7 @@ class ProductSpec:
     edition: str | None = None
     description: str = ""
     description_key: str = ""
+    match_key: str = ""
     warnings: list[str] = field(default_factory=list)
 
     def identity_key(self) -> str:
@@ -125,6 +126,7 @@ def parse_product(
         edition="Enterprise Edition" if _EDITION.search(raw) else None,
         description=raw,
         description_key=build_description_key(raw),
+        match_key=build_match_key(raw),
         warnings=warnings,
     )
 
@@ -148,6 +150,66 @@ def build_description_key(text: str) -> str:
     # Drop bare colour words once capacity and noise are gone.
     tokens = [t for t in text.split() if t not in _COLOUR_WORDS]
     return " ".join(tokens)
+
+
+# Words that identify *which product* something is, as opposed to describing it.
+# Everything outside this set is dropped from the match key.
+_MODEL_WORDS = {
+    # product lines
+    "iphone", "ipad", "ipod", "macbook", "imac", "airpods", "airpod", "airtag", "watch",
+    "pixel", "galaxy", "tab", "note", "redmi", "poco", "moto", "edge", "razr", "xcover",
+    "switch", "playstation", "xbox", "console", "buds", "band", "nord",
+    # variants
+    "pro", "max", "plus", "mini", "air", "ultra", "fold", "flip", "se", "xr", "xs",
+    "fe", "lite", "series", "wifi", "cellular", "gen", "e",
+    # brands, so 'Apple iPhone' and 'iPhone' do not diverge
+    "apple", "samsung", "google", "xiaomi", "motorola", "sony", "nintendo", "honor",
+    "oppo", "oneplus", "vivo", "realme", "nokia", "huawei", "nothing", "amazfit",
+}
+
+_SIZE_TOKEN = re.compile(r"^\d+(?:mm|w|inch|in|\")?$", re.IGNORECASE)
+_MODEL_CODE = re.compile(r"^(?:sm[-_]?)?[a-z]{1,3}\d{2,4}[a-z]?$", re.IGNORECASE)
+
+
+def build_match_key(text: str) -> str:
+    """A looser key, used only for matching buyers to sellers — never for identity.
+
+    `description_key` keeps everything it cannot confidently discard, which is right for
+    identity: merging two products that are not the same destroys stock. But it leaves
+    marketing colour words behind, and a seller line reducing to
+    'apple iphone 16 bluegreen ultramarin' will never meet a buyer's 'apple iphone 16'.
+
+    So this keeps only tokens that say *which product* something is — product line,
+    variant, model number, size — and drops every adjective. The asymmetry is
+    deliberate: a wrong identity silently overwrites real stock, while a wrong match
+    shows a suggestion that a human dismisses in a second.
+    """
+    text = _RAM_STORAGE.sub(" ", text)
+    text = _CAPACITY.sub(" ", text)
+    text = _EAN.sub(" ", text)
+    text = _PUNCT.sub(" ", text)
+    text = re.sub(r"\s+", " ", text).strip().lower()
+
+    kept = [
+        token
+        for token in text.split()
+        if token in _MODEL_WORDS or _SIZE_TOKEN.match(token) or _MODEL_CODE.match(token)
+    ]
+
+    # Repeated tokens carry no extra information and vary between suppliers.
+    seen: set[str] = set()
+    unique = [t for t in kept if not (t in seen or seen.add(t))]
+
+    # A key must be specific enough to mean something. '4smarts Pico Dual 20W Car
+    # Charger' reduces to '20w', which would match every other 20W accessory on the
+    # board. An empty key means "no reliable match key"; the caller falls back to the
+    # stricter description key, and accessories match on EAN as they should.
+    named = any(t in _MODEL_WORDS for t in unique)
+    coded = sum(1 for t in unique if _MODEL_CODE.match(t))
+    if not named and coded < 2:
+        return ""
+
+    return " ".join(unique)
 
 
 _COLOUR_WORDS = {
@@ -196,7 +258,12 @@ def _find_colour(raw: str) -> str | None:
     for token in re.split(r"[/,·]| - |—", raw):
         words = [w for w in _PUNCT.sub(" ", token).split() if w.lower() in _COLOUR_WORDS]
         if words:
-            candidates.append(" ".join(words))
+            # 'Starlight Starlight' happens when a supplier repeats the colour in the
+            # description and again in a bracketed note. Two words is also the ceiling —
+            # 'Space Gray' is a colour, but 'Gold Beige Rubber' is a colour plus a strap.
+            seen: set[str] = set()
+            deduped = [w for w in words if not (w.lower() in seen or seen.add(w.lower()))]
+            candidates.append(" ".join(deduped[:2]))
 
     if not candidates:
         return None
