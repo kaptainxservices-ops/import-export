@@ -128,6 +128,20 @@ def process_email(payload: InboundEmail, repo: Repository) -> PipelineResult:
             currency=row.currency or counterparty.default_currency,
             description=row.description,
             source_ref=row.source_ref,
+            # These become real columns. The database rebuilds identity_key from them
+            # as a generated column, so omitting them would key every row identically.
+            fields={
+                "brand": spec.brand or row.brand,
+                "category": spec.category or row.category,
+                "ean": spec.ean,
+                "description_key": spec.description_key,
+                "capacity_gb": spec.capacity_gb,
+                "ram_gb": spec.ram_gb,
+                "colour": spec.colour,
+                "network": spec.network,
+                "dual_sim": spec.dual_sim,
+                "edition": spec.edition,
+            },
         )
         for row, spec in (
             (r, parse_product(r.description, ean=r.ean, colour=r.colour)) for r in rows

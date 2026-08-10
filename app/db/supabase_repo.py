@@ -11,6 +11,7 @@ The logic this implements is all decided elsewhere. This file only reads and wri
 from __future__ import annotations
 
 import logging
+from datetime import datetime, timezone
 from typing import Any
 
 from app.brain.reconcile import Action, ExistingOffer, IncomingOffer
@@ -21,14 +22,61 @@ log = logging.getLogger(__name__)
 
 
 def get_client() -> Any:
-    """Build the Supabase client. Imported lazily so tests never need the package."""
+    """Build the Supabase client. Imported lazily so tests never need the package.
+
+    The configuration is checked here rather than left to the client library, whose
+    only complaint is 'Invalid URL' with no indication of what it received. Every
+    message below names the actual value, because the mistakes are all invisible ones:
+    the whole line pasted into the value, a trailing '/rest/v1/', a stale key name.
+    """
     from supabase import create_client
 
     settings = get_settings()
-    if not settings.supabase_url or not settings.supabase_secret_key:
-        raise RuntimeError("SUPABASE_URL and SUPABASE_SECRET_KEY must be set")
 
-    return create_client(settings.supabase_url, settings.supabase_secret_key)
+    url = (settings.supabase_url or "").strip().rstrip("/")
+    key = (settings.supabase_secret_key or "").strip()
+
+    if not url:
+        raise RuntimeError(
+            "SUPABASE_URL is not set. Add it to .env as the bare project URL, "
+            "e.g. SUPABASE_URL=https://abcdefgh.supabase.co"
+        )
+    if not key:
+        raise RuntimeError(
+            "SUPABASE_SECRET_KEY is not set. Supabase > Project Settings > API > "
+            "Secret keys. Note the name changed: it used to be SUPABASE_SERVICE_ROLE_KEY."
+        )
+
+    if not url.startswith(("http://", "https://")):
+        raise RuntimeError(f"SUPABASE_URL must start with https:// — got {url!r}")
+
+    if "=" in url:
+        raise RuntimeError(
+            f"SUPABASE_URL contains an '=' — the whole line was probably pasted into "
+            f"the value. Got {url!r}"
+        )
+
+    # The client library appends /rest/v1 itself; leaving it on produces requests to
+    # /rest/v1/rest/v1/ that 404 with no useful message.
+    if "/rest/v1" in url or "/auth/v1" in url:
+        raise RuntimeError(
+            f"SUPABASE_URL should be the base project URL with no path — got {url!r}"
+        )
+
+    if not key.startswith(("sb_secret_", "eyJ")):
+        raise RuntimeError(
+            "SUPABASE_SECRET_KEY does not look like a Supabase key. Expected either a "
+            "new-format 'sb_secret_...' key or a legacy service_role JWT beginning "
+            "'eyJ'. Supabase > Project Settings > API > Secret keys."
+        )
+
+    if key.startswith("sb_publishable_") or key.startswith("sb_anon_"):
+        raise RuntimeError(
+            "SUPABASE_SECRET_KEY is a publishable key. The backend needs the secret "
+            "key, which bypasses row-level security; the publishable one cannot write."
+        )
+
+    return create_client(url, key)
 
 
 class SupabaseRepository:
@@ -172,7 +220,14 @@ class SupabaseRepository:
         """
         inserts: list[dict] = []
         changes: list[dict] = []
-        now = "now()"
+
+        # An ISO timestamp, not the string "now()". PostgREST sends JSON values as
+        # literals, so "now()" would be stored as those six characters and every
+        # timestamp comparison against it would fail — silently, since the column is
+        # text-parseable and the insert succeeds.
+        # timezone.utc rather than datetime.UTC: the alias only exists from 3.11, and
+        # this should not be the file that breaks on an older interpreter.
+        now = datetime.now(timezone.utc).isoformat()  # noqa: UP017
 
         for action in actions:
             incoming = action.incoming or incoming_by_key.get(action.identity_key)
@@ -189,6 +244,10 @@ class SupabaseRepository:
                         "unit_price": incoming.unit_price,
                         "currency": incoming.currency,
                         "source_ref": incoming.source_ref,
+                        # The database recomputes identity_key from these as a stored
+                        # generated column. Omit them and every row keys as 'spec:|||',
+                        # so the second insert violates the uniqueness constraint.
+                        **{k: v for k, v in incoming.fields.items() if v is not None},
                     }
                 )
 

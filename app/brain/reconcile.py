@@ -73,6 +73,13 @@ class IncomingOffer:
     description: str = ""
     source_ref: str = ""
 
+    # Product columns — brand, ean, capacity and so on — carried through for storage.
+    # Reconciliation never reads them; identity is already decided by identity_key.
+    # They travel here because the database recomputes identity_key from these columns
+    # as a generated column, so an insert that omits them keys every row identically
+    # and the second row violates the uniqueness constraint.
+    fields: dict = field(default_factory=dict)
+
 
 @dataclass(frozen=True)
 class FieldChange:
