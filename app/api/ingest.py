@@ -10,6 +10,8 @@ import logging
 from fastapi import APIRouter, Header, HTTPException, status
 
 from app.config import get_settings
+from app.dependencies import get_repository
+from app.pipeline import process_email
 from app.schemas.email import InboundEmail, IngestAccepted
 
 router = APIRouter(tags=["ingest"])
@@ -55,9 +57,39 @@ def ingest(
         len(payload.body_text),
     )
 
-    # Phase 2 replaces this: classify -> extract -> normalise -> reconcile -> persist.
+    try:
+        repository = get_repository()
+    except RuntimeError as error:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(error)
+        ) from error
+
+    try:
+        result = process_email(payload, repository)
+    except Exception:
+        # A single malformed email must not take the pipeline down for every other
+        # supplier that morning. n8n retries on a 500; the log carries the detail.
+        log.exception("pipeline failed for message_id=%s", payload.message_id)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="processing failed; see server logs",
+        ) from None
+
     return IngestAccepted(
         message_id=payload.message_id,
         accepted=True,
-        detail="received; extraction not implemented yet (Phase 2)",
+        detail=_describe(result),
+    )
+
+
+def _describe(result) -> str:
+    if result.reconcile is None:
+        return f"{result.outcome}: {'; '.join(result.notes) or 'no further action'}"
+
+    counts = result.reconcile
+    return (
+        f"{result.outcome} as {result.side}: {result.row_count} rows, "
+        f"{counts.inserted} inserted, {counts.updated} updated, "
+        f"{counts.refreshed} refreshed, {counts.closed} closed "
+        f"(status {counts.status})"
     )

@@ -284,6 +284,27 @@ def test_blank_header_over_the_product_column():
     assert table.rows[0].price == 579.00
 
 
+def test_currency_read_from_the_price_cell_when_the_header_is_silent():
+    """GOtel labels the column plainly 'Price' and writes '11,90 €' in every cell.
+    Without this, a 219-row list lands with no currency, and an offer with no currency
+    cannot be compared against anything."""
+    table = parse_grid(_grid([
+        ["", "EAN", "Price", "Quantity"],
+        ["Apple USB-C Power Adapter 20W White", "195949121296", "11,90 €", "79"],
+        ["Apple iPhone 15 128GB Black", "195949035999", "579,00 €", "50"],
+    ]))
+    assert table.rows[0].currency == "EUR"
+    assert table.rows[0].price == 11.90
+
+
+def test_header_currency_beats_the_cell():
+    table = parse_grid(_grid([
+        ["Description", "Qty", "Preis / Price €"],
+        ["Apple iPhone 15 128GB", "50", "579"],
+    ]))
+    assert table.rows[0].currency == "EUR"
+
+
 def test_repeated_headers_inside_the_body_are_skipped():
     """GOtel reprints its header every few rows as a separator. Parsed as data those
     become offers named 'EAN' priced at 'Price'."""

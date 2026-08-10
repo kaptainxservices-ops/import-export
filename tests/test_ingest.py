@@ -7,7 +7,22 @@ internet can post fake offers onto the client's board.
 import pytest
 
 from app.config import get_settings
+from app.db.memory import InMemoryRepository
+from app.db.models import TenantConfig
+from app.dependencies import set_repository
 from tests.conftest import TEST_TOKEN
+
+
+@pytest.fixture(autouse=True)
+def _in_memory_repository():
+    """Point the endpoint at a working in-memory store rather than Supabase."""
+    set_repository(
+        InMemoryRepository(
+            [TenantConfig(id="11111111-1111-1111-1111-111111111111", name="Test")]
+        )
+    )
+    yield
+    set_repository(None)
 
 
 def test_rejects_missing_token(client, sample_email):

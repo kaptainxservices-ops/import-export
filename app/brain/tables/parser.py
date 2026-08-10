@@ -184,9 +184,16 @@ def _build_row(
     if not brand and section:
         brand = detect_brand(section)
 
+    # Currency, in order of reliability: a dedicated column, then the header
+    # ('Preis / Price €'), then the price cell itself. GOtel writes '11,90 €' in every
+    # cell and labels the column plainly 'Price', so without the last step an entire
+    # 219-row list lands with no currency at all — and an offer with no currency cannot
+    # be compared against anything.
     row_currency = currency
     if cell("currency"):
         row_currency = normalise_currency(cell("currency"), default=currency)
+    elif row_currency is None and cell("price"):
+        row_currency = normalise_currency(cell("price"))
 
     warnings: list[str] = []
     if cell("price") and price is None:
