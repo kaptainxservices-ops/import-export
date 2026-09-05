@@ -14,3 +14,9 @@ target-version = "py311"
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B"]
+
+[tool.ruff.lint.per-file-ignores]
+# B008 forbids calling a function in an argument default. In FastAPI, Depends(),
+# Query() and Header() in defaults are the framework's own idiom — the rule is right
+# in general and wrong here.
+"app/api/*.py" = ["B008"]

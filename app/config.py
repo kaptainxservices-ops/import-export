@@ -28,10 +28,23 @@ class Settings(BaseSettings):
     classify_model: str = "claude-haiku-4-5-20251001"
     extract_model: str = "claude-sonnet-5"
 
+    # Any provider speaking the OpenAI chat-completions shape — Groq, Gemini's compatible
+    # endpoint, OpenRouter, a local server. Consulted only when anthropic_api_key is
+    # empty, so switching to Anthropic is filling in one line and switching back is
+    # clearing it. Model names are separate because no two providers call them the same.
+    llm_base_url: str = ""
+    llm_api_key: str = ""
+    llm_classify_model: str = ""
+    llm_extract_model: str = ""
+
     # Supabase. supabase_secret_key is the sb_secret_... key, formerly service_role:
     # it bypasses row-level security and must never reach the frontend.
     supabase_url: str = ""
     supabase_secret_key: str = ""
+
+    # Where the dashboard is served from, comma-separated. Localhost is always allowed;
+    # this adds the deployed origin. Needed because the browser calls /matches directly.
+    dashboard_origin: str = ""
 
     # Monitoring
     sentry_dsn: str = ""

@@ -23,6 +23,8 @@ from dataclasses import dataclass, field
 
 from app.brain.normalise.brands import detect_brand, detect_category
 from app.brain.normalise.colours import normalise_colour
+from app.brain.normalise.grades import normalise_grade
+from app.brain.normalise.regions import normalise_region_code
 
 # '8+256', '12+1TB' — RAM first, then storage.
 _RAM_STORAGE = re.compile(r"\b(?P<ram>\d{1,2})\s*\+\s*(?P<storage>\d{1,4})\s*(?P<u>gb|tb)?\b",
@@ -63,6 +65,12 @@ class ProductSpec:
     capacity_gb: int | None = None
     ram_gb: int | None = None
     colour: str | None = None
+    # Grade and region are read but deliberately kept OUT of identity_key below. They
+    # describe a lot rather than name a product, and the database's generated column
+    # mirrors that exactly — the two expressions have to agree or reconciliation starts
+    # creating duplicates instead of updating rows.
+    grade: str | None = None
+    region_code: str | None = None
     network: str | None = None
     dual_sim: bool | None = None
     edition: str | None = None
@@ -121,6 +129,8 @@ def parse_product(
         capacity_gb=capacity,
         ram_gb=ram,
         colour=resolved_colour,
+        grade=normalise_grade(raw),
+        region_code=normalise_region_code(raw),
         network=network_match.group(1).upper() if network_match else None,
         dual_sim=True if _DUAL_SIM.search(raw) else None,
         edition="Enterprise Edition" if _EDITION.search(raw) else None,
@@ -200,6 +210,18 @@ def build_match_key(text: str) -> str:
     seen: set[str] = set()
     unique = [t for t in kept if not (t in seen or seen.add(t))]
 
+    # The manufacturer's name is dropped, because whether a supplier writes it is a
+    # habit rather than a fact about the product. A buyer's 'IPHONE 15 128GB black'
+    # reduced to 'iphone 15' and a seller's 'Apple iPhone 15 128GB Pink' to
+    # 'apple iphone 15' — the same handset, and they could never meet.
+    #
+    # Only when something is left. 'Apple' on its own is all the key there is, and an
+    # empty key matches nothing. And only the maker's name: 'Redmi' and 'Galaxy' are
+    # product lines that carry real meaning, so they stay.
+    without_brand = [t for t in unique if t not in _MAKER_WORDS]
+    if without_brand:
+        unique = without_brand
+
     # A key must be specific enough to mean something. '4smarts Pico Dual 20W Car
     # Charger' reduces to '20w', which would match every other 20W accessory on the
     # board. An empty key means "no reliable match key"; the caller falls back to the
@@ -212,12 +234,26 @@ def build_match_key(text: str) -> str:
     return " ".join(unique)
 
 
+# Manufacturer names only. Deliberately excludes product lines — 'redmi', 'galaxy',
+# 'poco', 'moto' — which distinguish one product from another and must survive.
+_MAKER_WORDS = {
+    "apple", "samsung", "xiaomi", "google", "motorola", "nokia", "sony", "huawei",
+    "honor", "oppo", "vivo", "realme", "oneplus", "asus", "lenovo", "tcl", "zte",
+    "alcatel", "hmd", "infinix", "tecno", "ulefone", "doogee", "blackview",
+}
+
 _COLOUR_WORDS = {
     "black", "white", "blue", "green", "red", "pink", "purple", "yellow", "orange",
     "gray", "grey", "silver", "gold", "graphite", "navy", "mint", "lavender",
     "charcoal", "lilac", "olive", "teal", "sage", "starlight", "midnight", "cream",
     "beige", "bronze", "copper", "violet", "cobalt", "sky", "jet", "shadow", "icy",
     "lightblue", "light",
+    # Apple's titanium finishes, which are how every iPhone 15 Pro and 16 Pro is
+    # described — 'Natural Ti', 'Blue Ti', 'Desert Titanium'. Without these the colour
+    # comes back empty for the entire Pro range, which is the top of the market.
+    # Identity still separated the lots, because the words survive in description_key;
+    # what was lost was the colour a trader reads off the row.
+    "titanium", "ti", "natural", "desert", "ultramarine",
 }
 
 

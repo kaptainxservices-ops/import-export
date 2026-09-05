@@ -13,6 +13,23 @@ import re
 # 'galaxy', and 'redmi' resolves to Xiaomi rather than being missed.
 _BRAND_ALIASES: list[tuple[str, str]] = [
     (r"\b(?:iphone|ipad|airpods?|airtag|macbook|imac|apple\s*watch|magsafe|apple)\b", "Apple"),
+    # Apple's watches, written the way suppliers actually write them. A whole section of
+    # one sample list reads 'Watch Ultra 3 LTE 49mm Black Titanium Case' with the word
+    # Apple nowhere on the line — 40-odd rows that matched nothing, because 'apple watch'
+    # above needs both words. 'Watch' alone is far too broad, so each model line is named.
+    (r"\bwatch\s*(?:ultra|series|se)\b", "Apple"),
+    # Beats is Apple, and their lists never say so.
+    (r"\b(?:beats|powerbeats|solo\s*buds|studio\s*buds)\b", "Apple"),
+    # SanDisk product lines. Their flash drives are sold by line name — 'Ultra Flair',
+    # 'Cruzer Blade', 'Extreme Pro' — and the manufacturer is rarely written at all.
+    # Safe after the Apple line above, which claims 'Watch Ultra' first: a flash drive
+    # named 'Ultra' cannot be reached until 'Watch Ultra' has had its turn.
+    (
+        r"\b(?:sandisk|cruzer|extreme\s*pro)\b"
+        r"|\bultra\b[^\n]{0,28}\bflash\s*drive\b"
+        r"|\b(?:ultra|extreme)\s*(?:flair|fit|dual|shift|luxe|go)\b",
+        "SanDisk",
+    ),
     # Samsung part codes. Whole lists arrive grouped under a 'Samsung' heading with the
     # brand named nowhere on the individual lines — 'A17 5G DS SM-A176 4+128 — Black'.
     # SM- is unambiguous, so it recovers the brand without needing the heading.
@@ -28,13 +45,21 @@ _BRAND_ALIASES: list[tuple[str, str]] = [
     (r"\b(?:nothing\s*(?:phone|watch|ear)|nothing)\b", "Nothing"),
     (r"\b(?:dyson|airwrap|supersonic)\b", "Dyson"),
     (r"\bgopro\b", "GoPro"),
+    (r"\b(?:dji|osmo|mavic|ronin)\b", "DJI"),
     (r"\bmarshall\b", "Marshall"),
     (r"\b(?:amazon|echo\s*(?:dot|spot|show)|fire\s*(?:hd|tv)|kindle|alexa)\b", "Amazon"),
     (r"\bdreame\b", "Dreame"),
     (r"\bcat\s*s\d{2}\b", "CAT"),
     (r"\b(?:bosch|philips|braun)\b", "Other"),
     (r"\b(?:oneplus|one\s*plus)\b", "OnePlus"),
-    (r"\b(?:playstation|ps5|ps4|sony|bravia)\b", "Sony"),
+    # Sony's own part codes, which is how their audio and phones are listed. WH- and WF-
+    # are headphones and earbuds; XQ- is an Xperia. The brand name itself rarely appears.
+    (
+        r"\b(?:playstation|ps5|ps4|sony|bravia|xperia)\b"
+        r"|\b(?:WH|WF)-[A-Z0-9]{4,}"
+        r"|\bXQ-[A-Z]{2}\d{2}",
+        "Sony",
+    ),
     (r"\b(?:nintendo|switch\s*2|switch)\b", "Nintendo"),
     (r"\b(?:huawei|honor)\b", "Honor"),
     (r"\boppo\b", "Oppo"),

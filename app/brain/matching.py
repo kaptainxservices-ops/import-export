@@ -76,6 +76,12 @@ class Requirement:
     colour: str | None = None
     country: str | None = None
     match_key: str = ""
+    # A hard gate, not a hint. See _compatible.
+    category: str | None = None
+    # Every colour the buyer said yes to. 'IPHONE 17 PRO MAX 256GB blue / silver /
+    # orange' is one order for 50 units that three finishes can fill, not an order for
+    # blue that silver nearly fills. Empty means only `colour` is acceptable.
+    accepted_colours: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -96,6 +102,8 @@ class Supply:
     colour: str | None = None
     country: str | None = None
     match_key: str = ""
+    # A hard gate, not a hint. See _compatible.
+    category: str | None = None
 
 
 @dataclass(frozen=True)
@@ -410,7 +418,57 @@ def _combinations(
 
             out.append(_build_combination(requirement, group))
 
+    sweep = _sweep(requirement, exact, max_suppliers)
+    if sweep is not None and tuple(sorted(a.supply_id for a in sweep.allocations)) not in seen:
+        out.append(sweep)
+
     return out
+
+
+def _sweep(
+    requirement: Requirement, exact: list[Supply], max_suppliers: int
+) -> MatchOption | None:
+    """Take the cheapest lots in order until the order is full or the stock runs out.
+
+    Two things the exhaustive search above cannot do, both found on a real requirement
+    for 50 iPhone 17 Pro Max that the board answered with 19.
+
+    **The cap is on suppliers, not rows.** MAX_SUPPLIERS exists because each additional
+    supplier is another negotiation, another shipment and another chance of the lot
+    vanishing. Six lots from *one* supplier is one negotiation, and capping the group at
+    three rows threw away half their stock.
+
+    **A near-complete fill beats a small exact one.** The search above discards any group
+    that cannot cover the order outright, so 19 + 18 + 4 + 3 + 3 + 2 = 49 of 50 was
+    dropped and a lone 19 became the best offer. A buyer wanting 50 would rather hear
+    'I have 49' than 'I have 19'.
+    """
+    wanted = requirement.quantity or 0
+    if wanted <= 0 or len(exact) < 2:
+        return None
+
+    chosen: list[Supply] = []
+    suppliers: set[str] = set()
+    remaining = wanted
+
+    for item in sorted(exact, key=lambda s: s.unit_price or 0):
+        if remaining <= 0:
+            break
+        if item.counterparty_id not in suppliers and len(suppliers) >= max_suppliers:
+            continue
+        take = min(remaining, item.quantity or 0)
+        if take <= 0:
+            continue
+        chosen.append(item)
+        suppliers.add(item.counterparty_id)
+        remaining -= take
+
+    # One lot is not a combination — `_single` already covers it, and offering the same
+    # thing twice under two names wastes a line of the trader's attention.
+    if len(chosen) < 2:
+        return None
+
+    return _build_combination(requirement, tuple(chosen))
 
 
 def _build_combination(requirement: Requirement, group: tuple[Supply, ...]) -> MatchOption:
@@ -488,6 +546,9 @@ def _is_exact(requirement: Requirement, item: Supply) -> bool:
     3 requirements out of 225. Falling back to the spec fields is what makes buyer
     lists usable at all.
     """
+    if not _compatible(requirement, item):
+        return False
+
     if requirement.ean and item.ean:
         return requirement.ean == item.ean
 
@@ -504,8 +565,57 @@ def _is_exact(requirement: Requirement, item: Supply) -> bool:
         left
         and left == right
         and requirement.capacity_gb == item.capacity_gb
-        and _same(requirement.colour, item.colour)
+        and _colour_ok(requirement, item)
     )
+
+
+def _colour_ok(requirement: Requirement, item: Supply) -> bool:
+    """Whether this supply's finish is one the buyer will take.
+
+    Buyers name several: 'IPHONE 17 PRO MAX 256GB blue / silver / orange'. Read as a
+    request for blue, the silver and orange rows become near misses — a different
+    section of the drawer, and crucially not combinable — so a board holding 19 blue,
+    20 silver and 10 orange offered 19 of 50 and called the rest a compromise. It was
+    49 of 50 all along.
+    """
+    if _same(requirement.colour, item.colour):
+        return True
+
+    if requirement.accepted_colours and item.colour:
+        return item.colour.strip().lower() in {
+            c.strip().lower() for c in requirement.accepted_colours
+        }
+
+    return False
+
+
+def _compatible(requirement: Requirement, item: Supply) -> bool:
+    """Whether these two could be the same thing at all, before looking at the words.
+
+    This exists because of a real row on the board: a buyer wanting 100 iPhone 15 128GB
+    was offered a *silicone MagSafe case* at €8. Both descriptions reduce to the match
+    key 'iphone 15', because the word iPhone in the case's name is describing what it
+    fits, and every distinguishing word — silicone, magsafe, case — is exactly the kind
+    of adjective the match key is built to discard.
+
+    No amount of text comparison fixes that, because the text genuinely is similar. What
+    separates them is that one is a phone and one is an accessory, and the parser already
+    knows: `detect_category` labels the case correctly. Nothing was asking.
+
+    So category and brand are gates rather than scores. A mismatch is not a weaker match
+    to be ranked lower or shown as a near miss — it is a different product, and offering
+    it wastes the trader's attention on every single requirement.
+
+    A missing value never blocks: plenty of rows have no category, and refusing those
+    would be worse than the problem being solved.
+    """
+    if requirement.category and item.category and requirement.category != item.category:
+        return False
+
+    if requirement.brand and item.brand and requirement.brand.lower() != item.brand.lower():
+        return False
+
+    return True
 
 
 def _comparable_keys(requirement: Requirement, item: Supply) -> tuple[str, str]:
@@ -527,6 +637,9 @@ def _is_near(requirement: Requirement, item: Supply) -> bool:
     Two different EANs alone do not make a near-miss — a case and a phone have
     different EANs too. The descriptions have to agree first.
     """
+    if not _compatible(requirement, item):
+        return False
+
     left, right = _comparable_keys(requirement, item)
     if not left or left != right:
         return False
@@ -534,7 +647,7 @@ def _is_near(requirement: Requirement, item: Supply) -> bool:
     differences = 0
     if requirement.capacity_gb != item.capacity_gb:
         differences += 1
-    if not _same(requirement.colour, item.colour):
+    if not _colour_ok(requirement, item):
         differences += 1
 
     return 0 < differences <= 2
@@ -544,7 +657,7 @@ def _relaxations(requirement: Requirement, item: Supply) -> list[str]:
     out = []
     if requirement.capacity_gb != item.capacity_gb:
         out.append(f"capacity {item.capacity_gb}GB, wanted {requirement.capacity_gb}GB")
-    if not _same(requirement.colour, item.colour):
+    if not _colour_ok(requirement, item):
         out.append(f"colour {item.colour}, wanted {requirement.colour}")
     return out
 
@@ -575,9 +688,20 @@ def _score(option: MatchOption) -> float:
     customs that can erase the gain that made it look attractive.
     """
     if option.total_margin is None:
-        # Unknown margin sorts below anything with a real number, but above nothing —
-        # a currency-mismatched option is still a lead worth a phone call.
-        return -1.0
+        # Unknown margin is the normal case here, not the exception: a WTB list says
+        # what a buyer wants and almost never what they will pay. Returning one flat
+        # value for all of them left every such requirement sorted by insertion order,
+        # which is how a board holding 49 of the 50 units wanted offered 19 — the
+        # single-supplier options are built first and nothing ever reordered them.
+        #
+        # So rank by how much of the order gets filled. Still below any known margin,
+        # because a number the trader can act on beats one they have to ring up for.
+        filled = option.filled_quantity or 0
+        wanted = option.requested_quantity or filled or 1
+        coverage = min(1.0, filled / wanted) if wanted else 0.0
+        if option.kind == "near_miss":
+            coverage *= 0.5
+        return round(-1.0 + coverage * 0.9, 4)
 
     score = float(option.total_margin)
 

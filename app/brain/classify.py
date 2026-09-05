@@ -40,6 +40,22 @@ _SELL_SIGNALS = re.compile(
 )
 
 
+# The trade's filing convention, in the subject line only. Weaker than a WTS/WTB marker
+# and much stronger than anything in a body: 'All in Srl Offer', 'Patktal Offer',
+# 'VNN International - Offer' are all suppliers offering stock, and 'Bauer Request' is
+# somebody asking for it. The client sorts his own inbox by exactly this word, which is
+# why these are two of the folder names he sent the samples in.
+#
+# A bare noun, so consulted only when no marker was found. 'Send us your best offer' is a
+# buyer, and it is a marker, so it never reaches here.
+_SUBJECT_SELL_NOUN = re.compile(
+    r"\b(?:offer|offers|offering|offerta|offerte|oferta|aanbod)\b", re.IGNORECASE
+)
+_SUBJECT_BUY_NOUN = re.compile(
+    r"\b(?:request|requests|enquiry|inquiry|wanted|anfrage|richiesta)\b", re.IGNORECASE
+)
+
+
 @dataclass(frozen=True)
 class Classification:
     side: Side | None
@@ -66,6 +82,14 @@ def classify_side(subject: str | None, body: str | None) -> Classification:
         return Classification("buy", 0.95, f"subject says {_first(_BUY_SIGNALS, subject)!r}")
     if subject_sell and not subject_buy:
         return Classification("sell", 0.95, f"subject says {_first(_SELL_SIGNALS, subject)!r}")
+
+    if not subject_buy and not subject_sell:
+        noun_sell = bool(_SUBJECT_SELL_NOUN.search(subject))
+        noun_buy = bool(_SUBJECT_BUY_NOUN.search(subject))
+        if noun_sell and not noun_buy:
+            return Classification("sell", 0.9, "subject is titled as an offer")
+        if noun_buy and not noun_sell:
+            return Classification("buy", 0.9, "subject is titled as a request")
 
     # Both in the subject: 'WTS / WTB list' happens. The body decides, weakly.
     head = body[:2000]

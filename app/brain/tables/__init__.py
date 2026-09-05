@@ -17,11 +17,12 @@ hundred tokens per email and tens of thousands.
 """
 
 from app.brain.tables.columns import ColumnMap, detect_header_row, map_columns
-from app.brain.tables.parser import TableRow, parse_grid
+from app.brain.tables.parser import ColumnMapper, TableRow, parse_grid
 from app.brain.tables.reader import Grid, read_html_tables, read_spreadsheet
 
 __all__ = [
     "ColumnMap",
+    "ColumnMapper",
     "Grid",
     "TableRow",
     "detect_header_row",

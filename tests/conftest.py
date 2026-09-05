@@ -21,6 +21,13 @@ def _isolate_settings(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setenv("ANTHROPIC_API_KEY", "")
     monkeypatch.setenv("SUPABASE_URL", "")
     monkeypatch.setenv("SUPABASE_SECRET_KEY", "")
+    # Cleared for the same reason as the Anthropic key, and it matters more: a developer
+    # with a working .env would otherwise have the test suite posting their sample emails
+    # to a live provider on every run.
+    monkeypatch.setenv("LLM_API_KEY", "")
+    monkeypatch.setenv("LLM_BASE_URL", "")
+    monkeypatch.setenv("LLM_CLASSIFY_MODEL", "")
+    monkeypatch.setenv("LLM_EXTRACT_MODEL", "")
 
     get_settings.cache_clear()
     yield

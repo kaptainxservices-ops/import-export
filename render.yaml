@@ -19,6 +19,17 @@ services:
         sync: false
       - key: ANTHROPIC_API_KEY
         sync: false
+      # An OpenAI-compatible provider, used only while ANTHROPIC_API_KEY is empty.
+      - key: LLM_BASE_URL
+        sync: false
+      - key: LLM_API_KEY
+        sync: false
+      - key: LLM_CLASSIFY_MODEL
+        sync: false
+      - key: LLM_EXTRACT_MODEL
+        sync: false
+      - key: DASHBOARD_ORIGIN
+        sync: false
       - key: SUPABASE_URL
         sync: false
       - key: SUPABASE_SECRET_KEY

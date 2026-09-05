@@ -17,7 +17,19 @@ from __future__ import annotations
 from typing import Protocol
 
 from app.brain.reconcile import Action, ExistingOffer, IncomingOffer
-from app.db.models import CounterpartyConfig, EmailRecord, ImportRecord, TenantConfig
+from app.db.models import (
+    Allocation,
+    BoardOffer,
+    CounterpartyConfig,
+    Deal,
+    EmailRecord,
+    ImportRecord,
+    ReviewItem,
+    StoredEmail,
+    SupplierSummary,
+    TenantConfig,
+    UsageEvent,
+)
 
 
 class Repository(Protocol):
@@ -25,6 +37,9 @@ class Repository(Protocol):
         ...
 
     def find_counterparty(self, tenant_id: str, email: str) -> CounterpartyConfig | None:
+        ...
+
+    def get_counterparty(self, tenant_id: str, counterparty_id: str) -> CounterpartyConfig | None:
         ...
 
     def create_counterparty(
@@ -66,4 +81,99 @@ class Repository(Protocol):
         ...
 
     def record_import(self, record: ImportRecord) -> str:
+        ...
+
+    def record_usage(self, events: list[UsageEvent]) -> None:
+        """Token spend, per tenant. Accounting only — nothing reads it to make a
+        decision, so a failure to write it must never fail the email that earned it."""
+        ...
+
+    # ---------------------------------------------------------------- matching
+
+    def tenant_for_user(self, user_id: str) -> str | None:
+        """Which tenant a signed-in user belongs to.
+
+        Resolved server-side from `profiles`, never taken from the request. A tenant id
+        sent by the browser is a request to read someone else's board.
+        """
+        ...
+
+    def get_board_offer(self, tenant_id: str, offer_id: str) -> BoardOffer | None:
+        ...
+
+    def load_board(self, tenant_id: str, side: str, limit: int = 5000) -> list[BoardOffer]:
+        """Every live offer on one side, for matching against."""
+        ...
+
+    # ---------------------------------------------------------------- review
+
+    def list_review_queue(self, tenant_id: str, limit: int = 200) -> list[ReviewItem]:
+        """Emails the pipeline declined to file, newest first."""
+        ...
+
+    # ---------------------------------------------------------------- deals
+
+    def list_deals(self, tenant_id: str, include_closed: bool = False) -> list[Deal]:
+        """Deals with their allocations, newest first."""
+        ...
+
+    def get_deal(self, tenant_id: str, deal_id: str) -> Deal | None:
+        ...
+
+    def create_deal(self, tenant_id: str, title: str | None, status: str) -> Deal:
+        ...
+
+    def update_deal(self, tenant_id: str, deal_id: str, changes: dict) -> bool:
+        ...
+
+    def commitments_on_offer(self, tenant_id: str, offer_id: str) -> list[tuple]:
+        """Every existing claim on one lot, as (deal_id, reference, quantity, is_open).
+
+        Read before an allocation is written. Over-allocating a lot is refused and
+        double-committing one is warned about, and neither is answerable without knowing
+        what the other deals already hold.
+        """
+        ...
+
+    def add_allocation(self, tenant_id: str, deal_id: str, leg: dict) -> Allocation:
+        ...
+
+    def remove_allocation(self, tenant_id: str, allocation_id: str) -> bool:
+        ...
+
+    # ---------------------------------------------------------------- suppliers
+
+    def list_suppliers(self, tenant_id: str) -> list[SupplierSummary]:
+        """Every counterparty, with the settings that govern how their lists are read."""
+        ...
+
+    def update_supplier(self, tenant_id: str, supplier_id: str, changes: dict) -> bool:
+        """Change a supplier's parsing settings. False if they are not on this board."""
+        ...
+
+    def count_emails(self, tenant_id: str) -> int:
+        """How many emails have been seen at all.
+
+        Only used to tell the two empty queues apart. "Nothing needs review" and
+        "nothing has been loaded" look identical on screen and mean opposite things —
+        one is the system working, the other is the system not running.
+        """
+        ...
+
+    def get_stored_email(self, tenant_id: str, email_id: str) -> StoredEmail | None:
+        """An email read back out, complete enough to run extraction over again."""
+        ...
+
+    def attribute_email(
+        self,
+        tenant_id: str,
+        email_id: str,
+        counterparty_id: str | None = None,
+        classification: str | None = None,
+    ) -> bool:
+        """Record a human's answer to what the pipeline would not guess.
+
+        Returns False when the email does not belong to this tenant, which is the check
+        that stops an id from one client's board resolving an email on another's.
+        """
         ...

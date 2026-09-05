@@ -21,11 +21,14 @@ from app.brain.normalise.colours import normalise_colour
 from app.brain.normalise.grades import normalise_grade
 from app.brain.normalise.models import normalise_model
 from app.brain.normalise.money import (
+    detect_declared_currency,
     detect_incoterm,
     detect_price_basis,
     detect_vat_included,
+    find_price,
     normalise_currency,
     parse_price,
+    strip_marked_prices,
 )
 from app.brain.normalise.product import ProductSpec, parse_product
 from app.brain.normalise.quantity import parse_quantity
@@ -38,10 +41,12 @@ __all__ = [
     "Variant",
     "detect_brand",
     "detect_category",
+    "detect_declared_currency",
     "detect_incoterm",
     "detect_price_basis",
     "detect_vat_included",
     "expand_variants",
+    "find_price",
     "normalise_colour",
     "normalise_currency",
     "normalise_grade",
@@ -51,4 +56,5 @@ __all__ = [
     "parse_price",
     "parse_product",
     "parse_quantity",
+    "strip_marked_prices",
 ]

@@ -41,7 +41,102 @@ _WORDS = {
 
 _AMBIGUOUS_SYMBOL = re.compile(r"[$]")
 
-_NUMERIC = re.compile(r"\d[\d.,\s ]*\d|\d")
+# A number may contain separators but NEVER whitespace. Allowing whitespace glued
+# 'Samsung A57 5G' into '575' and wrote that onto the board as a price — a model number
+# and a network standard, read as money, on every row from that supplier.
+_NUMERIC = re.compile(r"\d+(?:[.,]\d+)*")
+
+# A number that something marks as money: a symbol either side, or a currency code.
+# Needed for prose, where a line holds several numbers and only one of them is a price.
+#
+# The lookahead on `after` earns its place. A currency symbol binds to exactly one
+# number, and in
+#
+#     FIRE TV STICK HD 8GB WI-Fi 5 UPC 840414699953 €24,50
+#
+# the € belongs to the 24,50 that follows it, not to the barcode in front. Without the
+# lookahead `after` matched '840414699953 €', consumed the symbol, left the real price
+# unmarked, and put a twelve-digit UPC on the board as the price of a fire stick.
+_MARKED_PRICE = re.compile(
+    r"[€$£]\s*(?P<before>\d+(?:[.,]\d+)*)"
+    r"|(?P<after>\d+(?:[.,]\d+)*)\s*[€$£](?!\s*\d)"
+    r"|(?P<coded>\d+(?:[.,]\d+)*)\s*(?:EUR|USD|GBP|AED|PLN|CHF|SEK|CZK)\b",
+    re.IGNORECASE,
+)
+
+# A long unbroken run of digits is a barcode, not money. EAN-8, UPC-12, EAN-13 and
+# GTIN-14, which is the same rule `tables.parser._clean_ean` uses to decide the opposite
+# question. No handset costs eight figures, and a price column is not where a barcode
+# becomes harmless — it is where it gets quoted to a buyer.
+_BARCODE = re.compile(r"^\d{8}$|^\d{12,14}$")
+
+
+# A currency stated once for the whole list. AB Business writes '(PRICE IN EUR)' under
+# the subject line and then 60 bare numbers; read row by row, every one of them lands on
+# the board with no currency at all.
+#
+# Anchored to the words that make it a declaration. A bare 'EUR' anywhere in a body is
+# not one — these emails carry VAT numbers, French addresses and 'commercial@' links, and
+# matching loosely would put a currency on a list that never stated one.
+_DECLARED_CURRENCY = re.compile(
+    r"""(?:
+        (?:all\s+)?pri(?:ce|ces)|prezz(?:i|o)|preis(?:e|liste)?|prijs|prix|precio|cena
+      )
+      [^\n\r]{0,24}?
+      \b(?P<code>EUR|USD|GBP|AED|PLN|CHF|SEK|CZK|HUF|RON|INR|HKD|SGD)\b
+      |
+      \b(?P<code2>EUR|USD|GBP|AED|PLN|CHF|SEK|CZK|HUF|RON|INR|HKD|SGD)\b
+      [^\n\r]{0,12}?
+      (?:pri(?:ce|ces)|preis(?:e|liste)?|listino|pricelist)
+    """,
+    re.IGNORECASE | re.VERBOSE,
+)
+
+
+def detect_declared_currency(subject: str | None, body: str | None) -> str | None:
+    """A currency the sender stated once, for everything below it.
+
+    Looked for near the top only. A price list that says 'EUR' in its heading means it
+    about the list; the same three letters 400 lines down are as likely to be a footer,
+    a bank detail or an unsubscribe link, and a currency taken from those is a wrong
+    currency on every row — which does not look like an error, it looks like a margin.
+    """
+    for text in (subject or "", (body or "")[:1500]):
+        match = _DECLARED_CURRENCY.search(text)
+        if match:
+            code = match.group("code") or match.group("code2")
+            if code:
+                return code.upper()
+    return None
+
+
+def strip_marked_prices(raw: str) -> str:
+    """Take the money back out of a line, leaving the product.
+
+    A prose offer is one string: 'Apple iPhone 15 Pro Max 256GB Natural Titanium 905 USD'.
+    The price is read out of it, and if it is then left *in* it, the description that
+    reaches the board carries the price twice — once in its own column and once in the
+    product name.
+
+    That is not cosmetic. `description_key` is built from this text and is what identity
+    and matching compare on, so a seller at 905 and a buyer at 960 wanting the identical
+    handset produce different keys and never meet. Every prose-quoted product on the
+    board was invisible to matching for exactly this reason.
+    """
+    if not raw:
+        return raw
+
+    cleaned = _MARKED_PRICE.sub(" ", raw)
+    cleaned = re.sub(r"\s{2,}", " ", cleaned)
+    # A currency word left stranded by the substitution above — 'iPhone 15 USD'.
+    cleaned = re.sub(
+        r"\s*\b(?:EUR|USD|GBP|AED|PLN|CHF|SEK|CZK)\b\s*$", " ", cleaned, flags=re.IGNORECASE
+    )
+    cleaned = cleaned.strip(" -–—,;:/|")
+
+    # Never hand back nothing. A line that is only a price has no product in it, and the
+    # caller's own checks should reject it rather than being given an empty string.
+    return cleaned or raw
 
 _INCOTERMS = ["EXW", "FCA", "FOB", "CIF", "CFR", "CPT", "CIP", "DAP", "DPU", "DDP", "DDU"]
 
@@ -132,8 +227,41 @@ def parse_price(raw: str | None, decimal_hint: str | None = None) -> float | Non
     if not token or not any(c.isdigit() for c in token):
         return None
 
+    # A barcode that has wandered into a price column, or into a line of prose next to a
+    # currency symbol. Refusing leaves the row priceless, which shows on the board as a
+    # gap somebody fills in; accepting it puts a twelve-digit number where a price goes.
+    if _BARCODE.match(token):
+        return None
+
     value = _interpret(token, decimal_hint)
     return value
+
+
+def find_price(raw: str | None, decimal_hint: str | None = None) -> float | None:
+    """The price inside a line of prose — but only when something marks it as money.
+
+    `parse_price` assumes the text it is given *is* a price, which is true of a
+    spreadsheet cell and false of a sentence. Vadimpex writes
+
+        Samsung A57 5G DS 8/128GB A576 *288* Navy *259€*
+
+    where the first number is a model, the second a network standard, the third a
+    capacity, the fourth a quantity, and only the last is money. Taking the first
+    number put 575 on the board as the price of that handset.
+
+    So a currency marker is required, and the LAST marked number wins — in every
+    format seen, the price is written after the description rather than before it.
+    """
+    if not raw:
+        return None
+
+    matches = list(_MARKED_PRICE.finditer(raw))
+    if not matches:
+        return None
+
+    last = matches[-1]
+    token = last.group("before") or last.group("after") or last.group("coded")
+    return _interpret(token, decimal_hint) if token else None
 
 
 def _interpret(token: str, decimal_hint: str | None) -> float | None:

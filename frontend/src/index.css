@@ -1,0 +1,1070 @@
+/* The dashboard's whole stylesheet.
+ *
+ * Plain CSS on purpose: one file, no build step beyond Vite, nothing to break when a
+ * utility framework changes its config format.
+ *
+ * The design brief is narrow. This is a dense trading board that somebody reads at speed
+ * on a laptop, so the work is legibility rather than decoration — numbers that line up,
+ * a clear hierarchy inside a row, and colour spent only where it carries meaning.
+ * Freshness and margin are worth colour. Nothing else is.
+ */
+
+/* ---------------------------------------------------------------- tokens */
+
+:root {
+  /* A warm, paper-ish palette. This is a document somebody reads, not an app they
+     operate, and the cool blue-grey of a SaaS dashboard made every row feel like a
+     control. Ink on off-white, with colour spent only on freshness and money. */
+  --ink: #1a1a1a;
+  --ink-2: #3d3a35;
+  --muted: #8a837a;
+  --faint: #a8a29a;
+
+  --line: #e8e4dd;
+  --line-2: #d9d4cb;
+
+  --bg: #ffffff;
+  --page: #fbfaf8;
+  --panel: #f6f4f0;
+
+  /* Navy, used for the selected option's spine and for links. Reserved. */
+  --accent: #1e3a6f;
+  --accent-ink: #16294f;
+  --accent-soft: #eef2f9;
+  --accent-line: #c8d4e6;
+
+  --ok: #1a6b47;
+  --ok-soft: #edf5f0;
+  --ok-line: #bcd9c9;
+
+  /* Tan rather than orange — a caution in this palette, not an alarm. */
+  --warn: #96601f;
+  --warn-soft: #faf3e6;
+  --warn-line: #e6d3ae;
+
+  --danger: #9c3327;
+  --danger-soft: #fbf0ee;
+  --danger-line: #e8c8c2;
+
+  --radius: 10px;
+  --radius-sm: 7px;
+  /* Flat by default. Depth is for things that float above the page — drawers — not for
+     everything on it. */
+  --shadow: none;
+  --shadow-lg: 0 16px 40px rgb(26 26 26 / 12%), 0 2px 8px rgb(26 26 26 / 6%);
+
+  font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  font-size: 14px;
+  line-height: 1.5;
+  color: var(--ink);
+
+  -webkit-font-smoothing: antialiased;
+  /* Every number on this screen sits in a column under another number. */
+  font-variant-numeric: tabular-nums;
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  background: var(--page);
+}
+
+.app { min-height: 100vh; }
+
+button { font: inherit; cursor: pointer; }
+
+h1, h2, h3 { letter-spacing: -0.011em; }
+
+::selection { background: #e8e0d0; }
+
+/* ---------------------------------------------------------------- primitives */
+
+.muted { color: var(--muted); }
+.small { font-size: 12px; }
+.error { color: var(--danger); }
+.resolved { color: var(--ok); font-weight: 600; }
+
+.warn {
+  color: var(--warn);
+  background: var(--warn-soft);
+  border: 1px solid var(--warn-line);
+  padding: 10px 13px;
+  border-radius: var(--radius-sm);
+}
+
+.centre {
+  min-height: 100vh;
+  display: grid;
+  place-items: center;
+}
+
+.empty {
+  color: var(--muted);
+  padding: 56px 0;
+  text-align: center;
+}
+
+input, select {
+  font: inherit;
+  padding: 8px 11px;
+  border: 1px solid var(--line-2);
+  border-radius: var(--radius-sm);
+  background: var(--bg);
+  color: var(--ink);
+  transition: border-color 0.12s ease, box-shadow 0.12s ease;
+}
+
+input:hover, select:hover { border-color: var(--muted); }
+
+input:focus, select:focus {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px rgb(30 58 111 / 11%);
+}
+
+.link {
+  border: none;
+  background: none;
+  color: var(--accent);
+  padding: 0;
+  font-weight: 500;
+  text-decoration: none;
+  border-bottom: 1px solid transparent;
+  transition: border-color 0.12s ease, color 0.12s ease;
+}
+
+.link:hover {
+  color: var(--accent-ink);
+  border-bottom-color: currentColor;
+}
+
+.tag {
+  display: inline-block;
+  margin-left: 8px;
+  padding: 1px 8px;
+  border-radius: 999px;
+  background: var(--accent-soft);
+  border: 1px solid var(--accent-line);
+  color: var(--accent-ink);
+  font-size: 11px;
+  font-weight: 600;
+  vertical-align: 1px;
+}
+
+.tag.closed {
+  background: var(--danger-soft);
+  border-color: var(--danger-line);
+  color: var(--danger);
+}
+
+/* ---------------------------------------------------------------- login */
+
+.card {
+  background: var(--bg);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  padding: 32px;
+  box-shadow: var(--shadow-lg);
+}
+
+.login {
+  width: 350px;
+  display: flex;
+  flex-direction: column;
+  gap: 15px;
+}
+
+.login h1 { margin: 0; font-size: 21px; }
+.login p { margin: 0; }
+
+.login label {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  font-size: 13px;
+  color: var(--muted);
+}
+
+.login button[type="submit"] {
+  padding: 10px;
+  border: none;
+  border-radius: var(--radius-sm);
+  background: var(--accent);
+  color: white;
+  font-weight: 600;
+  box-shadow: var(--shadow);
+  transition: background 0.12s ease;
+}
+
+.login button[type="submit"]:hover:not([disabled]) { background: var(--accent-ink); }
+.login button[disabled] { opacity: 0.6; cursor: default; }
+
+/* ---------------------------------------------------------------- shell */
+
+.top {
+  position: sticky;
+  top: 0;
+  z-index: 30;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 24px;
+  padding: 0 24px;
+  background: rgb(255 255 255 / 88%);
+  backdrop-filter: saturate(1.6) blur(8px);
+  border-bottom: 1px solid var(--line);
+}
+
+/* Section names read as a line of prose separated by middots, not as a row of buttons.
+   The current one is simply the one in black. */
+.top nav { display: flex; align-items: center; gap: 0; padding: 15px 0; }
+
+.tab {
+  border: none;
+  background: none;
+  padding: 0 6px;
+  color: var(--muted);
+  font-weight: 500;
+  white-space: nowrap;
+  transition: color 0.12s ease;
+}
+
+.tab + .tab::before {
+  content: "·";
+  margin-right: 12px;
+  color: var(--line-2);
+}
+
+.tab:hover { color: var(--ink-2); }
+.tab.active { color: var(--ink); font-weight: 700; }
+
+.nav-count {
+  display: inline-block;
+  margin-left: 7px;
+  padding: 1px 8px;
+  border-radius: 999px;
+  background: var(--warn-soft);
+  color: var(--warn);
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.account {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  font-size: 13px;
+}
+
+main {
+  padding: 24px 24px 90px;
+  max-width: 1540px;
+  margin: 0 auto;
+}
+
+/* ---------------------------------------------------------------- filters */
+
+.filters {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  flex-wrap: wrap;
+  margin-bottom: 14px;
+}
+
+.search { flex: 1 1 320px; }
+
+.checkbox {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--muted);
+  white-space: nowrap;
+}
+
+.checkbox input { padding: 0; }
+
+.count { margin-left: auto; color: var(--muted); }
+
+.sortbar {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  margin-bottom: 12px;
+}
+
+.sortbar select {
+  min-width: 0;
+  padding: 2px 4px;
+  border-color: transparent;
+  background: none;
+  color: var(--ink-2);
+  font-weight: 500;
+}
+
+.sortbar select:hover { border-color: var(--line-2); }
+
+/* Segmented control and filter chips. Rounded, low contrast, and only the selected one
+   is tinted — a row of equally loud buttons tells you nothing about where you are. */
+.pills { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-bottom: 14px; }
+
+.pill {
+  padding: 5px 13px;
+  border: 1px solid transparent;
+  border-radius: 999px;
+  background: var(--panel);
+  color: var(--muted);
+  font-size: 13px;
+  font-weight: 500;
+  transition: background 0.12s ease, color 0.12s ease, border-color 0.12s ease;
+}
+
+.pill:hover { color: var(--ink-2); }
+
+.pill.on {
+  background: var(--accent-soft);
+  border-color: var(--accent-line);
+  color: var(--accent);
+  font-weight: 600;
+}
+
+.chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 4px 11px;
+  border: 1px solid var(--accent-line);
+  border-radius: 999px;
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-size: 12.5px;
+  font-weight: 500;
+}
+
+.chip button {
+  border: none;
+  background: none;
+  padding: 0;
+  color: inherit;
+  opacity: 0.55;
+  font-size: 13px;
+  line-height: 1;
+}
+
+.chip button:hover { opacity: 1; }
+
+.chip.add {
+  border-style: dashed;
+  border-color: var(--line-2);
+  background: none;
+  color: var(--muted);
+  cursor: pointer;
+}
+
+/* ---------------------------------------------------------------- tables */
+
+/* The tables sit on a card so each screen reads as one object rather than as lines
+   floating on the page. */
+.offers {
+  width: 100%;
+  border-collapse: separate;
+  border-spacing: 0;
+  background: var(--bg);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+  overflow: hidden;
+}
+
+.offers th {
+  position: sticky;
+  top: 53px;
+  z-index: 10;
+  text-align: left;
+  padding: 11px 14px;
+  background: var(--panel);
+  border-bottom: 1px solid var(--line);
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  white-space: nowrap;
+}
+
+.offers td {
+  padding: 13px 15px;
+  border-bottom: 1px solid var(--line);
+  vertical-align: top;
+}
+
+.offers tbody tr { transition: background 0.1s ease; }
+.offers tbody tr:hover { background: var(--page); }
+.offers tbody tr:last-child td { border-bottom: none; }
+
+.num { text-align: right; }
+
+.price {
+  font-size: 15px;
+  font-weight: 650;
+  letter-spacing: -0.012em;
+}
+
+/* Under the price, not beside it: it qualifies the number rather than being one. */
+.incoterm {
+  margin-top: 1px;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--faint);
+  letter-spacing: 0.04em;
+}
+
+/* Wide enough to read a full product name, capped so the price and freshness columns
+   never get pushed out of sight on a laptop. */
+.item { max-width: 620px; }
+
+.item-name {
+  font-weight: 600;
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+}
+
+.item-spec, .item-who {
+  font-size: 12px;
+  color: var(--muted);
+  margin-top: 3px;
+}
+
+.item-who { color: var(--faint); }
+
+.desc, .who, .samples { max-width: 340px; }
+
+.actions { white-space: nowrap; }
+.actions .link + .link { margin-left: 12px; }
+
+/* Freshness earns colour because it is the one column that changes meaning by the
+   hour: suppliers send a complete list daily, so anything not confirmed today needs
+   a second look before it is quoted. */
+.age {
+  display: inline-block;
+  padding: 3px 9px;
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 500;
+  white-space: nowrap;
+}
+
+.age.today  { background: var(--ok-soft);     color: var(--ok);     }
+.age.recent { background: var(--warn-soft);   color: var(--warn);   }
+.age.stale  { background: #f2f4f7;            color: var(--muted);  }
+
+/* Old rows fade; they are never removed. What a supplier was asking last month is what
+   tells you whether today's number is good. */
+.board tr.stale td { opacity: 0.55; }
+.board tr.stale .age { opacity: 1; }
+.offers tr.closed { opacity: 0.5; }
+
+.suppliers td { vertical-align: middle; }
+.suppliers select { max-width: 232px; }
+
+/* Monospace so the separators line up — which is the entire thing being judged. */
+.samples {
+  font-family: ui-monospace, "Cascadia Mono", Menlo, monospace;
+  font-size: 12px;
+  color: var(--muted);
+  white-space: nowrap;
+}
+
+/* ---------------------------------------------------------------- tiles */
+
+.tiles {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(176px, 1fr));
+  gap: 12px;
+  margin-bottom: 18px;
+}
+
+.tile {
+  padding: 17px 19px;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+}
+
+.tile-label {
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--muted);
+}
+
+.tile-value {
+  margin-top: 8px;
+  font-size: 30px;
+  font-weight: 700;
+  letter-spacing: -0.025em;
+  line-height: 1.1;
+}
+
+.tile-value.ok   { color: var(--ok); }
+.tile-value.warn {
+  color: var(--warn);
+  background: none;
+  border: none;
+  padding: 0;
+}
+
+/* ---------------------------------------------------------------- match board */
+
+.match-rows {
+  display: flex;
+  flex-direction: column;
+  background: var(--bg);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+  overflow: hidden;
+}
+
+.match-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 24px;
+  width: 100%;
+  padding: 15px 18px;
+  text-align: left;
+  border: none;
+  border-bottom: 1px solid var(--line);
+  border-left: 3px solid transparent;
+  background: none;
+  transition: background 0.1s ease;
+}
+
+.match-row:last-child { border-bottom: none; }
+.match-row:hover { background: var(--page); }
+
+/* A fillable requirement is money on the table today. A short one is money that needs
+   another phone call. The rest is demand nobody can currently serve — still worth
+   seeing, which is why it dims rather than disappears. */
+.match-row.filled    { border-left-color: var(--accent); background: var(--panel); }
+.match-row.short     { border-left-color: var(--warn); }
+.match-row.filled:hover, .match-row.short:hover { background: #f2efe9; }
+.match-row.near_miss { border-left-color: var(--line-2); }
+.match-row.no_supply { opacity: 0.6; }
+
+/* Without this a long product name refuses to shrink and shoves the money column off
+   the right edge — flex children default to min-width:auto. */
+.match-main { min-width: 0; }
+
+.match-title {
+  font-weight: 600;
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+}
+.match-spec { font-weight: 400; color: var(--muted); }
+
+.match-who, .match-best {
+  font-size: 12.5px;
+  color: var(--muted);
+  margin-top: 4px;
+}
+
+.match-best strong { color: var(--ink-2); font-weight: 600; }
+.match-note { color: var(--warn); }
+
+.match-money { text-align: right; white-space: nowrap; }
+
+.match-margin {
+  font-size: 18px;
+  font-weight: 700;
+  color: var(--ok);
+  letter-spacing: -0.02em;
+}
+
+.match-margin.none { color: var(--faint); font-weight: 400; }
+
+/* A cost the client controls, not money already earned — so not green. */
+.match-cost {
+  font-size: 16px;
+  font-weight: 650;
+  letter-spacing: -0.015em;
+}
+
+.match-options {
+  margin-top: 2px;
+  font-size: 12px;
+  color: var(--accent);
+}
+
+/* ---------------------------------------------------------------- drawers */
+
+.drawer-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 50;
+  background: rgb(16 24 40 / 32%);
+  backdrop-filter: blur(2px);
+  display: flex;
+  justify-content: flex-end;
+  animation: fade 0.14s ease;
+}
+
+.drawer {
+  width: min(640px, 100%);
+  height: 100%;
+  padding: 22px 26px 72px;
+  background: var(--bg);
+  border-left: 1px solid var(--line);
+  box-shadow: var(--shadow-lg);
+  overflow-y: auto;
+  animation: slide 0.18s cubic-bezier(0.32, 0.72, 0, 1);
+}
+
+.drawer.wide { width: min(900px, 100%); }
+
+@keyframes fade { from { opacity: 0; } }
+@keyframes slide { from { transform: translateX(22px); opacity: 0.4; } }
+
+.drawer header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 16px;
+  margin-bottom: 12px;
+}
+
+.drawer header p { margin: 0; }
+
+.drawer h2 { margin: 0 0 5px; font-size: 18px; }
+
+.drawer h3 {
+  margin: 24px 0 6px;
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--muted);
+}
+
+.close {
+  border: none;
+  background: none;
+  width: 30px;
+  height: 30px;
+  border-radius: var(--radius-sm);
+  font-size: 22px;
+  line-height: 1;
+  color: var(--muted);
+  transition: background 0.12s ease, color 0.12s ease;
+}
+
+.close:hover { background: var(--panel); color: var(--ink); }
+
+/* The thing being matched, set in a block at the top so it stays the subject of every
+   option below it. */
+.subject-block {
+  padding: 16px 18px;
+  margin-bottom: 20px;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+}
+
+.subject-block h2 { margin: 0 0 5px; font-size: 17px; }
+.subject-block p { margin: 0; font-size: 13px; color: var(--muted); }
+.subject-block strong { color: var(--ink-2); }
+
+.facts {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 12px 22px;
+  margin: 0 0 10px;
+  padding: 15px;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+}
+
+.facts dt { font-size: 12px; color: var(--muted); }
+.facts dd { margin: 3px 0 0; font-weight: 600; }
+
+.subject { font-weight: 600; margin: 4px 0 12px; }
+
+.body, .review-preview {
+  white-space: pre-wrap;
+  word-break: break-word;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  padding: 13px;
+  overflow: auto;
+  font-family: ui-monospace, "Cascadia Mono", Menlo, monospace;
+  font-size: 12px;
+  line-height: 1.55;
+  color: var(--ink-2);
+}
+
+.body { max-height: 46vh; }
+
+/* ---------------------------------------------------------------- match options */
+
+.match-group { margin-bottom: 24px; }
+
+.match-group h3 {
+  margin: 0 0 10px;
+  border-bottom: 1px solid var(--line);
+  padding-bottom: 6px;
+}
+
+.option {
+  padding: 14px 16px;
+  margin-bottom: 11px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  transition: border-color 0.12s ease, box-shadow 0.12s ease;
+}
+
+.option:hover { border-color: var(--line-2); box-shadow: var(--shadow); }
+
+/* A shortfall is stated, not styled away. It usually means another supplier still has
+   to be found, and that is the trader's next phone call. */
+.option.short { border-left: 3px solid var(--warn); }
+
+.option-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 14px;
+  margin-bottom: 10px;
+}
+
+.fill { font-weight: 600; }
+.margin { font-weight: 700; color: var(--ok); }
+
+.legs { width: 100%; border-collapse: collapse; }
+
+.legs td {
+  padding: 4px 10px 4px 0;
+  vertical-align: top;
+  border: none;
+}
+
+.legs .who {
+  white-space: nowrap;
+  color: var(--muted);
+  max-width: 190px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.legs .desc {
+  max-width: 340px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.legs .price { font-size: 13px; font-weight: 600; }
+
+.leg-link { text-align: left; }
+
+.note {
+  margin: 7px 0 0;
+  font-size: 12px;
+  color: var(--warn);
+}
+
+/* ---------------------------------------------------------------- quoting */
+
+.quote-bar {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  flex-wrap: wrap;
+  padding: 11px 13px;
+  margin-bottom: 18px;
+  background: var(--accent-soft);
+  border: 1px solid var(--accent-line);
+  border-radius: var(--radius-sm);
+}
+
+.quote-bar input { width: 82px; }
+
+/* The line the trader pastes into a reply. Set apart from the cost breakdown above it,
+   because one is what he pays and the other is what he says. */
+.quote {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 18px;
+  margin-top: 11px;
+  padding: 10px 13px;
+  background: var(--ok-soft);
+  border: 1px solid var(--ok-line);
+  border-radius: var(--radius-sm);
+}
+
+.quote-label {
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+  color: var(--ok);
+}
+
+.quote-total {
+  font-weight: 700;
+  color: var(--ok);
+  white-space: nowrap;
+}
+
+/* ---------------------------------------------------------------- review */
+
+.queue-summary { margin: 0 0 16px; }
+
+.review-card {
+  max-width: 880px;
+  padding: 17px 19px;
+  margin-bottom: 14px;
+  background: var(--bg);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+}
+
+.review-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 16px;
+  margin-bottom: 12px;
+}
+
+.review-subject { font-weight: 600; }
+
+/* The two reasons are worked by different people with different information, so they
+   are told apart at a glance rather than read for. */
+.reason {
+  white-space: nowrap;
+  padding: 3px 10px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 600;
+  background: var(--warn-soft);
+  border: 1px solid var(--warn-line);
+  color: var(--warn);
+}
+
+.reason.sender {
+  background: var(--accent-soft);
+  border-color: var(--accent-line);
+  color: var(--accent-ink);
+}
+
+.reason.both {
+  background: var(--danger-soft);
+  border-color: var(--danger-line);
+  color: var(--danger);
+}
+
+.review-preview { max-height: 132px; margin: 0 0 15px; }
+
+.review-field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-bottom: 13px;
+  font-size: 13px;
+}
+
+.review-field em { font-style: normal; }
+
+.resolve {
+  padding: 9px 17px;
+  border: none;
+  border-radius: var(--radius-sm);
+  background: var(--accent);
+  color: white;
+  font-weight: 600;
+  box-shadow: var(--shadow);
+  transition: background 0.12s ease, transform 0.06s ease;
+}
+
+.resolve:hover:not([disabled]) { background: var(--accent-ink); }
+.resolve:active:not([disabled]) { transform: translateY(1px); }
+.resolve[disabled] { opacity: 0.45; cursor: default; box-shadow: none; }
+
+/* ---------------------------------------------------------------- narrow */
+
+@media (max-width: 720px) {
+  main { padding: 16px 12px 60px; }
+  .top { padding: 0 12px; gap: 8px; }
+  .tab { padding: 14px 9px; font-size: 13px; }
+  .match-row { flex-direction: column; gap: 8px; }
+  .match-money { text-align: left; }
+  .offers th { top: 0; }
+}
+
+/* ---------------------------------------------------------------- deals */
+
+.deal {
+  max-width: 900px;
+  padding: 18px 20px;
+  margin-bottom: 16px;
+  background: var(--bg);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+}
+
+.deal.done { opacity: 0.6; }
+
+.deal-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 16px;
+  margin-bottom: 14px;
+}
+
+.deal-title { font-weight: 600; font-size: 15px; }
+
+.deal-label {
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+/* The status box comes first because it is the one field that goes out of date and the
+   one the trader actually keeps current. */
+.deal-status { display: block; margin-bottom: 12px; }
+
+.deal-status textarea {
+  display: block;
+  width: 100%;
+  margin-top: 6px;
+  padding: 10px 12px;
+  font: inherit;
+  color: var(--ink);
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  resize: vertical;
+}
+
+.deal-status textarea:focus {
+  outline: none;
+  border-color: var(--accent);
+  background: var(--bg);
+  box-shadow: 0 0 0 3px rgb(30 58 111 / 11%);
+}
+
+.deal h3 {
+  margin: 18px 0 6px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.deal-foot {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  margin-top: 16px;
+  padding-top: 13px;
+  border-top: 1px solid var(--line);
+}
+
+.deal-visible { margin-top: 14px; align-items: flex-start; }
+.deal-visible em { font-style: normal; }
+
+.deal-close {
+  padding: 14px 16px;
+  margin-bottom: 14px;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+}
+
+/* ---------------------------------------------------------------- import queue */
+
+h3.section {
+  margin: 26px 0 12px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+h3.section:first-child { margin-top: 0; }
+
+/* The three numbers that make a 500-row list reviewable at a glance. */
+.import-counts {
+  display: flex;
+  gap: 36px;
+  margin: 14px 0 10px;
+}
+
+.import-count {
+  margin-top: 4px;
+  font-size: 22px;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+}
+
+.import-count.warn {
+  color: var(--warn);
+  background: none;
+  border: none;
+  padding: 0;
+}
+
+.import-actions {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  flex-wrap: wrap;
+  margin-top: 14px;
+}
+
+/* Rejecting an import undoes hundreds of rows. It should not look like the other two. */
+.link.danger { color: var(--danger); }
+.link.danger:hover { color: #7d281e; }
+
+.reason.healthy { background: var(--ok-soft); border-color: var(--ok-line); color: var(--ok); }
+.reason.check   { background: var(--warn-soft); border-color: var(--warn-line); color: var(--warn); }
+.reason.suspect { background: var(--danger-soft); border-color: var(--danger-line); color: var(--danger); }
+
+.flagged { margin-top: 16px; }
+
+.flagged-row {
+  padding: 14px 16px;
+  margin-top: 10px;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-left: 3px solid var(--warn);
+  border-radius: var(--radius-sm);
+}
+
+/* Every flagged row says what is wrong with it. A queue that says 'flagged' and nothing
+   else is a queue that gets approved blindly. */
+.flagged-why {
+  margin-bottom: 12px;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--warn);
+}
+
+.flagged-fields {
+  display: grid;
+  grid-template-columns: 2fr 1fr 1fr;
+  gap: 12px;
+  margin-bottom: 10px;
+}
+
+.flagged-row .resolve { margin-top: 10px; }

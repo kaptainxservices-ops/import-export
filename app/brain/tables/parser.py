@@ -18,11 +18,14 @@ stock.
 from __future__ import annotations
 
 import re
+from collections.abc import Callable
 from dataclasses import dataclass, field
 
 from app.brain.normalise import (
     detect_brand,
     detect_category,
+    detect_incoterm,
+    detect_price_basis,
     normalise_currency,
     parse_price,
     parse_quantity,
@@ -49,6 +52,11 @@ _NON_PRODUCT = re.compile(
 )
 
 
+# Given a header row and a handful of sample rows, name the columns — or decline.
+# Implemented by app.brain.llm.columns; anything with this shape will do.
+ColumnMapper = Callable[[list[str], list[list[str]]], "ColumnMap | None"]
+
+
 @dataclass
 class TableRow:
     """One extracted line, before normalisation into an offer."""
@@ -63,6 +71,10 @@ class TableRow:
     category: str | None = None
     code: str | None = None
     section: str | None = None
+    # EXW at the factory gate and DDP delivered are different numbers for the same
+    # handset. Read per row, because a sheet often mixes them.
+    incoterm: str | None = None
+    price_basis: str | None = None
     source_ref: str = ""
     warnings: list[str] = field(default_factory=list)
 
@@ -84,12 +96,17 @@ def parse_grid(
     grid: Grid,
     decimal_hint: str | None = None,
     default_currency: str | None = None,
+    column_mapper: ColumnMapper | None = None,
 ) -> ParsedTable:
     """Extract line items from one grid.
 
-    `needs_column_mapping` is set when the header cannot be recognised. That is the
-    only case that warrants a model call, and it is one call for the table — not one
-    per row.
+    `needs_column_mapping` is set when the header cannot be recognised. That is the only
+    case that warrants a model call, and `column_mapper` is where one may be supplied —
+    passed in rather than imported, so this module stays free of network calls and the
+    fallback can be tested with a two-line fake.
+
+    It is called at most once per table, never once per row, and only after the rules
+    have failed. Whatever it returns is still checked against the sheet before use.
     """
     if not grid.rows:
         return ParsedTable(source=grid.source)
@@ -97,13 +114,31 @@ def parse_grid(
     header_index = detect_header_row(grid.rows)
 
     if header_index is None:
-        # Plenty of lists have no header at all — AB Business sends two bare columns,
-        # a description and a price, under a section heading. The shape is still
-        # readable from the contents.
-        inferred = _infer_headerless(grid.rows)
-        if inferred is None:
-            return ParsedTable(source=grid.source, needs_column_mapping=True)
-        column_map, header_index = inferred, -1
+        # A header that labels one column and leaves the rest blank scores too low for
+        # detect_header_row to find, but is still a header.
+        partial = _partial_header(grid.rows)
+        if partial is not None:
+            column_map, header_index = partial
+        else:
+            # Plenty of lists have no header at all — AB Business sends two bare columns,
+            # a description and a price, under a section heading. The shape is still
+            # readable from the contents.
+            inferred = _infer_headerless(grid.rows)
+            if inferred is None:
+                # There may still be a header here — just one written in words we do not
+                # know, like 'Towar' or 'Buc.'. Offering it as a header when it holds no
+                # prices, and as nothing when it does, keeps a caption row out of the
+                # sample the model is asked to judge the columns by.
+                labels = _looks_like_labels(grid.rows[0])
+                inferred = _ask_mapper(
+                    column_mapper,
+                    grid.rows[0] if labels else [],
+                    _sample(grid.rows, 1 if labels else 0),
+                    grid.rows,
+                )
+            if inferred is None:
+                return ParsedTable(source=grid.source, needs_column_mapping=True)
+            column_map, header_index = inferred, -1
     else:
         column_map = map_columns(grid.rows[header_index])
         column_map.header_row = header_index
@@ -116,6 +151,21 @@ def parse_grid(
             )
             if index is not None:
                 column_map.columns["description"] = index
+
+        if not column_map.is_usable:
+            # A header written in an unfamiliar abbreviation — 'Cant.', 'Buc.' — costs
+            # the whole table, however readable its rows are. Ask, keeping the currency
+            # the header did yield.
+            proposed = _ask_mapper(
+                column_mapper,
+                grid.rows[header_index],
+                _sample(grid.rows, header_index + 1),
+                grid.rows,
+            )
+            if proposed is not None:
+                proposed.currency = proposed.currency or column_map.currency
+                proposed.header_row = header_index
+                column_map = proposed
 
     if not column_map.is_usable:
         return ParsedTable(source=grid.source, column_map=column_map, needs_column_mapping=True)
@@ -199,8 +249,15 @@ def _build_row(
     if cell("price") and price is None:
         warnings.append(f"unparseable price {cell('price')!r}")
 
+    # Looked for across the whole row, not just the description: suppliers put 'EXW' in
+    # a notes column, in the price header, or trailing the product name, and all three
+    # mean the same thing about what the number covers.
+    joined = " ".join(cell for cell in raw if cell)
+
     return TableRow(
         description=description,
+        incoterm=detect_incoterm(joined),
+        price_basis=detect_price_basis(joined),
         ean=_clean_ean(cell("ean")),
         # Sheets that give colour its own column do not repeat it in the description,
         # so ignoring it collapses every finish of a product into one identity.
@@ -215,6 +272,102 @@ def _build_row(
         source_ref=f"{source} row {line_number}",
         warnings=warnings,
     )
+
+
+def _sample(rows: list[list[str]], start: int, count: int = 5) -> list[list[str]]:
+    """A few rows with something in them, to show what the columns contain."""
+    out = []
+    for row in rows[start : start + 40]:
+        if any(cell and cell.strip() for cell in row):
+            out.append(row)
+        if len(out) >= count:
+            break
+    return out
+
+
+def _partial_header(
+    rows: list[list[str]], search_depth: int = 10
+) -> tuple[ColumnMap, int] | None:
+    """A header that names one column and leaves the rest blank.
+
+    Yukatel heads six tables with ['', 'Notice', '', 'Price €']: the price is labelled,
+    the product is not, and 'Notice' means nothing to us. One recognised cell is below
+    the two `detect_header_row` requires, and the whole list was being dropped over it —
+    116 rows of live stock discarded because of a blank cell.
+
+    Accepted only when the missing product column can be identified from the contents
+    beneath it, which is the same evidence that recovers GOtel's unlabelled column. A row
+    that names a price with nothing recognisable underneath it stays a coincidence.
+    """
+    for index, row in enumerate(rows[:search_depth]):
+        mapping = map_columns(row)
+        if "description" in mapping.columns:
+            continue
+        if not {"price", "quantity"} & set(mapping.columns):
+            continue
+
+        found = infer_description_column(rows, index, set(mapping.columns.values()))
+        if found is None:
+            continue
+
+        mapping.columns["description"] = found
+        mapping.header_row = index
+        if mapping.is_usable:
+            return mapping, index
+
+    return None
+
+
+def _worth_asking(rows: list[list[str]]) -> bool:
+    """Whether a table is plausibly stock at all, before spending a token on it.
+
+    Marketing emails are built out of tables — layout scaffolding, signature blocks,
+    social icons, a logo in a cell. 108 of the 143 tables across the sample emails have
+    an unreadable header and most of them are that. A table with no column of numbers in
+    it has no price and no quantity, so no mapping of it could be usable, and asking is
+    a charge that has no answer available to it.
+    """
+    body = [row for row in rows if any(cell and cell.strip() for cell in row)]
+    if len(body) < 5:
+        return False
+
+    for index in range(max(len(row) for row in body)):
+        values = [r[index].strip() for r in body[:20] if index < len(r) and r[index].strip()]
+        if len(values) < 4:
+            continue
+        numeric = sum(1 for value in values if parse_price(value) is not None)
+        if numeric / len(values) >= 0.6:
+            return True
+
+    return False
+
+
+def _looks_like_labels(row: list[str]) -> bool:
+    """A row of words with no money in it is a caption, not stock."""
+    values = [cell.strip() for cell in row if cell and cell.strip()]
+    if not values:
+        return False
+    return not any(parse_price(value) is not None for value in values)
+
+
+def _ask_mapper(
+    mapper: ColumnMapper | None,
+    header: list[str],
+    sample: list[list[str]],
+    rows: list[list[str]],
+) -> ColumnMap | None:
+    """Last resort, and it is allowed to fail.
+
+    A mapper that raises must not take the email down with it: the table was already
+    unreadable, and the outcome without one is the outcome we already had.
+    """
+    if mapper is None or not sample or not _worth_asking(rows):
+        return None
+    try:
+        proposed = mapper(header, sample)
+    except Exception:  # noqa: BLE001 — an unreadable table is not worth an exception
+        return None
+    return proposed if proposed is not None and proposed.is_usable else None
 
 
 def _infer_headerless(rows: list[list[str]], sample: int = 40) -> ColumnMap | None:

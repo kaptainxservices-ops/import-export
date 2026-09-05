@@ -1,0 +1,98 @@
+{
+  "name": "TVD — inbox to board",
+  "settings": { "executionOrder": "v1", "saveManualExecutions": true },
+  "nodes": [
+    {
+      "id": "trigger",
+      "name": "Every 5 minutes",
+      "type": "n8n-nodes-base.gmailTrigger",
+      "typeVersion": 1.2,
+      "position": [-320, 0],
+      "notes": "Polls rather than pushes. Gmail's push needs a Cloud Pub/Sub topic and a domain to verify; polling every five minutes is well inside the tolerance of a trade where lists arrive once a morning, and it has nothing to expire.\n\nsimple:false is required — the simple form drops the raw payload, and without that there are no attachments and no Message-ID.",
+      "parameters": {
+        "pollTimes": { "item": [{ "mode": "everyX", "value": 5, "unit": "minutes" }] },
+        "simple": false,
+        "filters": { "readStatus": "unread" },
+        "options": { "downloadAttachments": true }
+      },
+      "credentials": { "gmailOAuth2": { "id": "REPLACE_ME", "name": "Gmail account" } }
+    },
+
+    {
+      "id": "sheets",
+      "name": "Read any spreadsheets",
+      "type": "n8n-nodes-base.extractFromFile",
+      "typeVersion": 1,
+      "position": [-60, 0],
+      "alwaysOutputData": true,
+      "continueOnFail": true,
+      "notes": "continueOnFail is deliberate. A password-protected or corrupt workbook must not stop the email — the covering note often carries prices of its own, and an email that never arrives is invisible, while one that arrives with fewer rows is visible in the review queue.\n\nrawData + headerRow:false gives arrays of cells including the header. The parser finds the header row by scoring it, and often it is not row 1 — one supplier opens with seven rows of trading terms.",
+      "parameters": {
+        "operation": "xlsx",
+        "binaryPropertyName": "attachment_0",
+        "options": { "rawData": true, "headerRow": false, "includeEmptyCells": true }
+      }
+    },
+
+    {
+      "id": "build",
+      "name": "Build the payload",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [200, 0],
+      "notes": "Everything n8n decides is here, in one readable place, rather than spread across a dozen nodes nobody can diff. Its job is delivery: what the message MEANS is decided on the backend.",
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "// ---------------------------------------------------------------------------\n// One Gmail message -> the shape /ingest accepts.\n//\n// This file is plumbing. It does not decide whether an email is an offer or a\n// request, what a row means, or what anything costs — all of that is Python,\n// where it is tested. If you find yourself adding a rule about the trade here,\n// it belongs on the other side of the wire.\n// ---------------------------------------------------------------------------\n\nconst TENANT_ID = $env.TVD_TENANT_ID || 'b9316981-b732-4891-854f-3335205dd582';\n\n// Reply quoting only. NOT forwarded messages: the client's whole workflow is\n// forwarding a supplier's email to himself, so the payload sits below\n// 'Begin forwarded message' and cutting there would delete the email.\n// The backend strips again and refuses any cut that would remove the prices,\n// so this being imperfect is survivable.\nconst REPLY = [\n  /^\\s*(?:On|Am|Le|Il|El)\\b[^\\n]{0,160}\\b(?:wrote|schrieb|a écrit|ha scritto):\\s*$/im,\n  /^\\s*-{2,}\\s*Original Message\\s*-{2,}/im,\n  /^>[^\\n]*\\n>[^\\n]*\\n>/m,\n];\nconst FORWARD = /-{2,}\\s*Forwarded message\\s*-{2,}|Begin forwarded message/i;\n\nfunction stripQuoted(body) {\n  if (!body) return '';\n  let cut = null;\n  for (const pattern of REPLY) {\n    const found = body.match(pattern);\n    if (found && (cut === null || found.index < cut)) cut = found.index;\n  }\n  if (cut === null) return body;\n  if (FORWARD.test(body.slice(cut))) return body;   // the forward is the point\n  return body.slice(0, cut).trimEnd();\n}\n\nfunction address(raw) {\n  const found = String(raw || '').match(/[\\w.+-]+@[\\w-]+\\.[\\w.-]+/);\n  return found ? found[0].toLowerCase() : '';\n}\n\nfunction header(message, name) {\n  const headers = message.payload?.headers || message.headers || [];\n  const hit = headers.find((h) => String(h.name).toLowerCase() === name);\n  return hit ? hit.value : (message[name] || '');\n}\n\nconst out = [];\n\nfor (const item of $input.all()) {\n  const message = item.json;\n\n  // Message-ID is what /ingest deduplicates on. Gmail's own id is a fallback:\n  // without something stable, a redelivery reconciles a second time and every\n  // row missing from the second copy is closed as sold.\n  const messageId =\n    header(message, 'message-id') || `<gmail-${message.id}@tvd.local>`;\n\n  const text = message.text || message.textPlain || '';\n  const html = message.textHtml || message.textAsHtml || '';\n\n  // Spreadsheet rows come from the Extract node, which emits one item per sheet\n  // row. Grouped back into a grid here; the header row is included because the\n  // parser scores rows to find it rather than assuming row 1.\n  const rows = [];\n  for (const sheetItem of $('Read any spreadsheets').all()) {\n    const values = Object.values(sheetItem.json).map((v) => (v === null || v === undefined ? '' : String(v)));\n    if (values.some((v) => v.trim() !== '')) rows.push(values);\n  }\n\n  const attachments = [];\n  const binaries = item.binary || {};\n  for (const key of Object.keys(binaries)) {\n    const file = binaries[key];\n    const name = file.fileName || key;\n    const isSheet = /\\.(xlsx|xlsm|xls|csv)$/i.test(name);\n    attachments.push({\n      filename: name,\n      mime_type: file.mimeType || '',\n      kind: isSheet && rows.length ? 'table' : 'other',\n      rows: isSheet && rows.length ? rows : null,\n    });\n  }\n\n  out.push({\n    json: {\n      tenant_id: TENANT_ID,\n      message_id: messageId,\n      in_reply_to: header(message, 'in-reply-to') || null,\n      thread_id: message.threadId || null,\n      direction: 'inbound',\n      from_email: address(header(message, 'from')),\n      from_name: String(header(message, 'from') || '').split('<')[0].replace(/\"/g, '').trim(),\n      to: [address(header(message, 'to'))].filter(Boolean),\n      subject: header(message, 'subject') || '',\n      received_at: new Date(Number(message.internalDate) || Date.now()).toISOString(),\n      // What gets parsed.\n      body_text: stripQuoted(text || html.replace(/<[^>]+>/g, ' ')),\n      // The complete original, for the source drawer. Never parsed, so it keeps\n      // its markup — that is what table extraction reads.\n      body_raw: html || text,\n      attachments,\n    },\n  });\n}\n\nreturn out;\n"
+      }
+    },
+
+    {
+      "id": "post",
+      "name": "POST /ingest",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [460, 0],
+      "notes": "Retries on 5xx because the pipeline returns 500 for an unexpected failure and those are usually transient. It does NOT retry a 4xx: a malformed payload will be just as malformed the third time.\n\nDeduplication is on the backend by message_id, so a retry that actually succeeded the first time is harmless.",
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 5000,
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.TVD_BACKEND_URL }}/ingest",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "X-Ingest-Token", "value": "={{ $env.TVD_INGEST_TOKEN }}" }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($json) }}",
+        "options": { "timeout": 120000, "response": { "response": { "neverError": false } } }
+      }
+    },
+
+    {
+      "id": "log",
+      "name": "Log the outcome",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [720, 0],
+      "notes": "The backend replies with what it did — 'processed as sell: 219 rows, 219 inserted'. Surfacing it here means a morning's execution list is readable at a glance, instead of 30 identical green ticks that say nothing about whether any stock arrived.",
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "for (const item of $input.all()) {\n  const detail = item.json.detail || '(no detail)';\n  console.log(`${item.json.message_id} -> ${detail}`);\n}\nreturn $input.all();\n"
+      }
+    }
+  ],
+
+  "connections": {
+    "Every 5 minutes": { "main": [[{ "node": "Read any spreadsheets", "type": "main", "index": 0 }]] },
+    "Read any spreadsheets": { "main": [[{ "node": "Build the payload", "type": "main", "index": 0 }]] },
+    "Build the payload": { "main": [[{ "node": "POST /ingest", "type": "main", "index": 0 }]] },
+    "POST /ingest": { "main": [[{ "node": "Log the outcome", "type": "main", "index": 0 }]] }
+  },
+
+  "pinData": {}
+}

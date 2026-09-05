@@ -8,12 +8,21 @@ end up in the right state — which is the only claim worth making about reconci
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta
 from itertools import count
 
 from app.brain.reconcile import Action, ExistingOffer, IncomingOffer
-from app.db.models import CounterpartyConfig, EmailRecord, ImportRecord, TenantConfig
+from app.db.models import (
+    CounterpartyConfig,
+    EmailRecord,
+    ImportRecord,
+    ReviewItem,
+    StoredEmail,
+    SupplierSummary,
+    TenantConfig,
+    UsageEvent,
+)
 
 
 @dataclass
@@ -53,6 +62,7 @@ class InMemoryRepository:
         self.offers: dict[str, StoredOffer] = {}
         self.changes: list[ChangeLogEntry] = []
         self.imports: list[ImportRecord] = []
+        self.usage: list[UsageEvent] = []
         self._ids = count(1)
 
     def _next(self, prefix: str) -> str:
@@ -68,6 +78,9 @@ class InMemoryRepository:
             if cp.primary_email.lower() == email.lower():
                 return cp
         return None
+
+    def get_counterparty(self, tenant_id: str, counterparty_id: str) -> CounterpartyConfig | None:
+        return self.counterparties.get(counterparty_id)
 
     def create_counterparty(
         self, tenant_id: str, email: str, name: str | None
@@ -197,6 +210,122 @@ class InMemoryRepository:
     def record_import(self, record: ImportRecord) -> str:
         self.imports.append(record)
         return self._next("import")
+
+    def record_usage(self, events: list[UsageEvent]) -> None:
+        self.usage.extend(events)
+
+    # ---------------------------------------------------------------- review
+
+    def list_review_queue(self, tenant_id: str, limit: int = 200) -> list[ReviewItem]:
+        items = [
+            ReviewItem(
+                id=email_id,
+                received_at=record.received_at,
+                from_email=record.from_email,
+                subject=record.subject,
+                classification=record.classification,
+                needs_sender_review=record.needs_sender_review,
+                counterparty_id=record.counterparty_id,
+                counterparty_name=(
+                    self.counterparties[record.counterparty_id].name
+                    if record.counterparty_id in self.counterparties
+                    else None
+                ),
+                counterparty_method=record.counterparty_method,
+                counterparty_confidence=record.counterparty_confidence,
+                suggested_sender_name=record.suggested_sender_name,
+                body_preview=(record.body_text or "")[:400],
+                attachment_count=len(record.attachments),
+            )
+            for email_id, record in self.emails.items()
+            if record.tenant_id == tenant_id
+            and (record.needs_sender_review or record.classification == "unclassified")
+        ]
+        return sorted(items, key=lambda i: i.received_at, reverse=True)[:limit]
+
+    _SUPPLIER_SETTABLE = frozenset(
+        {"default_currency", "decimal_separator", "staleness_hours", "typical_row_count", "name"}
+    )
+
+    def list_suppliers(self, tenant_id: str) -> list[SupplierSummary]:
+        out = []
+        for cp in self.counterparties.values():
+            live = [
+                o for o in self.offers.values()
+                if o.counterparty_id == cp.id and o.tenant_id == tenant_id and o.status == "live"
+            ]
+            out.append(
+                SupplierSummary(
+                    id=cp.id,
+                    primary_email=cp.primary_email,
+                    name=cp.name,
+                    default_currency=cp.default_currency,
+                    decimal_separator=cp.decimal_separator,
+                    staleness_hours=cp.staleness_hours,
+                    typical_row_count=cp.typical_row_count,
+                    live_offers=len(live),
+                    last_seen_at=max((o.last_confirmed_at for o in live), default=None),
+                    sample_prices=[
+                        f"{o.unit_price} {o.currency or ''}".strip()
+                        for o in live[:5]
+                        if o.unit_price is not None
+                    ],
+                )
+            )
+        return out
+
+    def update_supplier(self, tenant_id: str, supplier_id: str, changes: dict) -> bool:
+        cp = self.counterparties.get(supplier_id)
+        allowed = {k: v for k, v in changes.items() if k in self._SUPPLIER_SETTABLE}
+        if cp is None or not allowed:
+            return False
+        self.counterparties[supplier_id] = replace(cp, **allowed)
+        return True
+
+    def count_emails(self, tenant_id: str) -> int:
+        return sum(1 for r in self.emails.values() if r.tenant_id == tenant_id)
+
+    def get_stored_email(self, tenant_id: str, email_id: str) -> StoredEmail | None:
+        record = self.emails.get(email_id)
+        if record is None or record.tenant_id != tenant_id:
+            return None
+
+        return StoredEmail(
+            id=email_id,
+            tenant_id=record.tenant_id,
+            message_id=record.message_id,
+            from_email=record.from_email,
+            subject=record.subject,
+            received_at=record.received_at,
+            body_text=record.body_text,
+            body_raw=record.body_raw,
+            attachments=list(record.attachments),
+            counterparty_id=record.counterparty_id,
+            classification=record.classification,
+        )
+
+    def attribute_email(
+        self,
+        tenant_id: str,
+        email_id: str,
+        counterparty_id: str | None = None,
+        classification: str | None = None,
+    ) -> bool:
+        record = self.emails.get(email_id)
+        if record is None or record.tenant_id != tenant_id:
+            return False
+
+        changes: dict = {}
+        if counterparty_id is not None:
+            changes["counterparty_id"] = counterparty_id
+            changes["counterparty_method"] = "manual"
+            changes["counterparty_confidence"] = 1.0
+            changes["needs_sender_review"] = False
+        if classification is not None:
+            changes["classification"] = classification
+
+        self.emails[email_id] = replace(record, **changes)
+        return True
 
     # ---------------------------------------------------------------- helpers
 

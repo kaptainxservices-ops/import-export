@@ -95,9 +95,22 @@ def test_leftmost_quantity_wins():
     assert map_columns(["Description", "Ready", "Incoming", "Price"]).columns["quantity"] == 1
 
 
-def test_table_without_a_price_is_not_usable():
-    assert map_columns(["Description", "Qty"]).is_usable is False
+def test_a_table_needs_a_product_and_one_commercial_fact():
+    """Price *or* quantity.
+
+    Requiring a price looks right for a supplier's list and is wrong for the trade:
+    a buyer's requirement sheet has no prices in it, because being quoted is the whole
+    reason they sent it. Thaysen's WTB list is headed ['QTY', 'MODELL'] and every one
+    like it was being discarded — all of the demand the matching engine exists to fill.
+    """
+    assert map_columns(["Description", "Qty"]).is_usable is True
+    assert map_columns(["Description", "Price"]).is_usable is True
     assert map_columns(["Description", "Qty", "Price"]).is_usable is True
+
+    # A product and nothing else is still not an offer.
+    assert map_columns(["Description", "Notes"]).is_usable is False
+    # And a price with nothing named against it is not one either.
+    assert map_columns(["Qty", "Price"]).is_usable is False
 
 
 # ---------------------------------------------------------------- row building
@@ -198,6 +211,60 @@ def test_unrecognisable_table_asks_for_column_mapping():
     table = parse_grid(_grid([["a", "b"], ["c", "d"]]))
     assert table.needs_column_mapping is True
     assert table.row_count == 0
+
+
+def test_a_header_that_labels_only_the_price_column():
+    """Yukatel's six tables, verbatim: ['', 'Notice', '', 'Price €'].
+
+    One recognised cell is below the two the header scorer needs, and 'Notice' means
+    nothing to us — so all 116 rows of live stock were being dropped over a blank cell.
+    The product column is recoverable from what sits underneath it.
+    """
+    table = parse_grid(
+        _grid(
+            [
+                ["", "Notice", "", "Price €"],
+                ["Apple iPhone 15 128GB", "", "10 YP", "555,00"],
+                ["Honor 400 5G Dual Sim 8GB RAM 256GB", "", "10 YP", "249,00"],
+                ["Samsung Galaxy A16 A165 Dual Sim 4GB RAM 128GB", "", "10 YP", "105,00"],
+                ["Teltonika FMB010 GPS Tracker", "", "10 YP", "11,00"],
+            ]
+        ),
+        decimal_hint="comma",
+    )
+
+    assert table.needs_column_mapping is False
+    assert table.row_count == 4
+    assert table.rows[0].description == "Apple iPhone 15 128GB"
+    assert [row.price for row in table.rows] == [555.0, 249.0, 105.0, 11.0]
+    assert all(row.currency == "EUR" for row in table.rows)
+
+
+def test_a_price_label_over_nothing_readable_is_still_refused():
+    """The recovery above needs a product column it can actually find. A row that says
+    'Price' with junk underneath it is a coincidence, not a header."""
+    table = parse_grid(_grid([["", "Price"], ["x", "1"], ["y", "2"], ["z", "3"]]))
+    assert table.needs_column_mapping is True
+
+
+def test_a_requirement_list_with_no_prices_is_read():
+    """Thaysen's WTB sheet. A buyer's list has no prices in it — being quoted is why
+    they sent it — and demanding one threw away every WTB list in the sample."""
+    table = parse_grid(
+        _grid(
+            [
+                ["QTY", "MODELL"],
+                ["500", "iPhone 15 Pro Max 256GB"],
+                ["200", "iPhone 16 128GB"],
+                ["50", "Samsung S24 Ultra 512GB"],
+            ]
+        )
+    )
+
+    assert table.row_count == 3
+    assert table.rows[0].quantity == 500
+    assert table.rows[0].price is None
+    assert table.rows[0].description == "iPhone 15 Pro Max 256GB"
 
 
 # ---------------------------------------------------------------- HTML reading

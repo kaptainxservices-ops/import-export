@@ -94,12 +94,20 @@ class ColumnMap:
 
     @property
     def is_usable(self) -> bool:
-        """A table is parseable if we know what to sell and what it costs.
+        """A table is parseable if we know what is being traded, and one fact about it.
 
-        Without a description there is no product; without a price there is no offer.
+        Price *or* quantity, and this took a real list to get right. A buyer's
+        requirement list has no prices in it — being quoted is the entire reason they
+        sent it. Thaysen's WTB sheet is headed ['QTY', 'MODELL'] and Bauer's asks for
+        'iPhone 17 Pro 256GB, mixed colors' against 'Please offer'. Demanding a price
+        column discarded every one of them, which is to say all of the demand the
+        matching engine exists to fill.
+
         Everything else can be recovered from the description text.
         """
-        return "description" in self.columns and "price" in self.columns
+        if "description" not in self.columns:
+            return False
+        return "price" in self.columns or "quantity" in self.columns
 
 
 def normalise_header(cell: str | None) -> str:

@@ -269,3 +269,51 @@ def test_incoterm_absent(raw):
 )
 def test_vat(raw, expected):
     assert detect_vat_included(raw) is expected
+
+
+# ------------------------------------------------- brands written the trade's way
+
+
+@pytest.mark.parametrize(
+    ("description", "expected"),
+    [
+        # Apple's watches, verbatim from a sample list. 'apple watch' needs both words;
+        # the supplier writes neither the brand nor the space.
+        ("Watch Ultra 3 LTE 49mm Black Titanium Case with Trail Loop", "Apple"),
+        ("Watch Series 11 GPS + Cellular 46mm Natural TC", "Apple"),
+        ("Beats Powerbeats Pro 2 - High-Performance Earbuds", "Apple"),
+        # SanDisk sells by product line and rarely writes its own name.
+        ("Ultra USB 3.0 Flash Drive", "SanDisk"),
+        ("Cruzer Blade USB 2.0 Flash Drive", "SanDisk"),
+        ("Ultra Dual Drive GO USB Type-C", "SanDisk"),
+        # Sony's part codes are how their audio and phones are actually listed.
+        ("WH-1000XM6 Headphone", "Sony"),
+        ("XQ-GE74 12+512GB Xperia 1 VIII", "Sony"),
+        ("Osmo Action 5 Pro Adventure Combo", "DJI"),
+    ],
+)
+def test_brands_the_suppliers_never_name(description, expected):
+    """1,407 rows on the real board had no brand and no barcode, so nothing downstream
+    could match them. Most were not a comprehension problem — they were a catalogue gap,
+    and four lines of pattern recovered 393 of them for no tokens and no latency."""
+    from app.brain.normalise import detect_brand
+
+    assert detect_brand(description) == expected
+
+
+def test_watch_ultra_is_a_watch_and_ultra_flair_is_a_flash_drive():
+    """The two patterns overlap on the word 'Ultra' and the order decides. Apple is
+    listed first, so a flash drive named Ultra cannot be reached until Watch Ultra has
+    had its turn — and a bare 'Ultra Flair' is still SanDisk."""
+    from app.brain.normalise import detect_brand
+
+    assert detect_brand("Watch Ultra 3 49mm") == "Apple"
+    assert detect_brand("Ultra Flair USB 3.0") == "SanDisk"
+
+
+def test_a_bare_watch_is_not_claimed_by_anyone():
+    """'Watch' alone is far too broad — every smartwatch on the board would become an
+    Apple. Each model line is named instead."""
+    from app.brain.normalise import detect_brand
+
+    assert detect_brand("Smart Watch D20 Fitness Tracker") != "Apple"
