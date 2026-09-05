@@ -73,7 +73,7 @@ def test_cheapest_supplier_ranks_first():
     options = fill_requirement(
         want(qty=50), [have("expensive", 60, 600), have("cheap", 60, 560)]
     )
-    assert options[0].allocations[0].supply_id == "cheap"
+    assert options[0].allocations[0].offer_id == "cheap"
 
 
 def test_a_supplier_cannot_match_its_own_requirement():
@@ -114,7 +114,7 @@ def test_combination_uses_the_cheapest_suppliers_first():
         [have("a", 60, 600), have("b", 60, 550)],
     )
     combo = next(o for o in options if o.kind == "combination")
-    assert combo.allocations[0].supply_id == "b"
+    assert combo.allocations[0].offer_id == "b"
     assert combo.allocations[0].quantity == 60
     assert combo.allocations[1].quantity == 40
 
@@ -148,7 +148,7 @@ def test_a_complete_fill_outranks_a_partial_one_of_similar_margin():
         want(qty=100, price=620),
         [have("full", 100, 590), have("part", 95, 589)],
     )
-    assert options[0].allocations[0].supply_id == "full"
+    assert options[0].allocations[0].offer_id == "full"
 
 
 # ---------------------------------------------------------------- near misses
@@ -271,7 +271,7 @@ def test_options_with_no_margin_sort_last():
         want(price=620, currency="EUR"),
         [have("priced", 200, 580, currency="EUR"), have("unknown", 200, 500, currency="USD")],
     )
-    assert options[0].allocations[0].supply_id == "priced"
+    assert options[0].allocations[0].offer_id == "priced"
 
 
 # ---------------------------------------------------------------- placing a lot
@@ -309,6 +309,51 @@ def test_placement_takes_the_best_paying_buyers_first():
                     currency="EUR", ean=EAN),
     ]
     assert place_offer(offer, buyers)[0].allocations[0].counterparty_id == "b-high"
+
+
+def test_a_placement_leg_names_the_buyer_all_the_way_through():
+    """Every field on a placement leg describes the buyer — including the row id.
+
+    The id is what the dashboard uses to open that row on the Buyers tab. Pointing it
+    back at the seller's own lot sent it looking for a sell row on the buy side, so the
+    link landed on an empty board and looked broken. Both directions are asserted here
+    because the bug was invisible in the fill direction, where the two ids coincide.
+    """
+    offer = have("lot", 100, 560)
+    buyer = Requirement(
+        id="req-kowloon", counterparty_id="b-1", quantity=70, unit_price=610,
+        currency="EUR", ean=EAN, description_key="apple iphone 15",
+        capacity_gb=128, colour="Black",
+    )
+
+    leg = place_offer(offer, [buyer])[0].allocations[0]
+
+    assert leg.offer_id == "req-kowloon"
+    assert leg.counterparty_id == "b-1"
+    assert leg.offer_id != offer.id
+
+
+def test_a_split_placement_points_every_leg_at_its_own_buyer():
+    offer = have("lot", 150, 560)
+    buyers = [
+        Requirement(id="b1", counterparty_id="buyer-1", quantity=80, unit_price=620,
+                    currency="EUR", ean=EAN, description_key="apple iphone 15",
+                    capacity_gb=128, colour="Black"),
+        Requirement(id="b2", counterparty_id="buyer-2", quantity=70, unit_price=610,
+                    currency="EUR", ean=EAN, description_key="apple iphone 15",
+                    capacity_gb=128, colour="Black"),
+    ]
+
+    split = next(o for o in place_offer(offer, buyers) if len(o.allocations) > 1)
+
+    assert [a.offer_id for a in split.allocations] == ["b1", "b2"]
+    assert all(a.offer_id != offer.id for a in split.allocations)
+
+
+def test_a_fill_leg_points_at_the_supplier_lot():
+    """The mirror of the rule above, so the two directions stay symmetrical."""
+    leg = fill_requirement(want(qty=50), [have("supplier-lot", 60, 560)])[0].allocations[0]
+    assert leg.offer_id == "supplier-lot"
 
 
 # ---------------------------------------------------------------- presentation

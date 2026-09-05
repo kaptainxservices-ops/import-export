@@ -161,6 +161,18 @@ function Board({ email }: { email: string }) {
             {error && <p className="error">{error}</p>}
             {loading ? (
               <p className="muted">Loading offers…</p>
+            ) : filters.offerId && offers.length === 0 ? (
+              // Distinct from "nothing matches those filters", which is what an empty
+              // search looks like. Arriving here from a match means one exact row was
+              // asked for by id and was not there, and saying so is what makes the
+              // difference between a stale board and a broken link visible.
+              <p className="empty">
+                That lot is not on this board — it may have been sold or withdrawn since
+                the match was worked out.{" "}
+                <button className="link" onClick={() => setFilters(emptyFilters)}>
+                  Show the whole board
+                </button>
+              </p>
             ) : (
               <OfferTable
                 offers={offers}

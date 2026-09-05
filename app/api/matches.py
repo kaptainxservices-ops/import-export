@@ -402,7 +402,7 @@ def _option(option: MatchOption, names: dict[str, str]) -> OptionOut:
         kind=option.kind,
         allocations=[
             AllocationOut(
-                offer_id=a.supply_id,
+                offer_id=a.offer_id,
                 counterparty_id=a.counterparty_id,
                 counterparty_name=names.get(a.counterparty_id),
                 quantity=a.quantity,

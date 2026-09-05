@@ -46,8 +46,15 @@ export function useOffers(side: Side, filters: OfferFilters, refreshKey = 0) {
   const filtersRef = useRef(filters);
   filtersRef.current = filters;
 
+  // Only the newest query may write to state. Two loads are easily in flight at once —
+  // a filter change starts one, the realtime subscription starts another — and without
+  // this the slower, older answer lands last and wins, leaving the board showing rows
+  // nobody asked for.
+  const sequence = useRef(0);
+
   const load = useCallback(async () => {
     const current = filtersRef.current;
+    const ticket = ++sequence.current;
     setError(null);
 
     let query = supabase
@@ -75,8 +82,17 @@ export function useOffers(side: Side, filters: OfferFilters, refreshKey = 0) {
 
     const { data, error: queryError, count } = await query;
 
-    if (queryError) setError(queryError.message);
-    else {
+    // A newer load started while this one was in flight. Its answer is the true one.
+    if (ticket !== sequence.current) return;
+
+    if (queryError) {
+      setError(queryError.message);
+      // Cleared rather than left standing: rows fetched under the previous filters,
+      // displayed under the new ones with an error above them, read as the answer to
+      // the question that just failed.
+      setOffers([]);
+      setTotal(0);
+    } else {
       setOffers((data ?? []) as Offer[]);
       setTotal(count ?? 0);
     }

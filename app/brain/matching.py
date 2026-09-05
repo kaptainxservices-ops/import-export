@@ -116,9 +116,15 @@ class Allocation:
 
     `unit_price` follows the same logic: the price being paid to the supplier when
     filling, the price being charged to the buyer when placing.
+
+    `offer_id` obeys the same rule, and it is the one that used to break it: it is the
+    id of the row **the counterparty owns** — the supplier's lot when filling, the
+    buyer's requirement when placing. The dashboard opens that row on the Sellers or
+    Buyers tab, so a placement leg naming the seller's own lot sent it looking for a
+    sell row on the buy side, and it found nothing.
     """
 
-    supply_id: str
+    offer_id: str
     counterparty_id: str
     quantity: int
     unit_price: float
@@ -247,7 +253,7 @@ def place_offer(
             continue
         allocations.append(
             Allocation(
-                supply_id=offer.id,
+                offer_id=buyer.id,
                 counterparty_id=buyer.counterparty_id,
                 quantity=take,
                 unit_price=buyer.unit_price or 0.0,
@@ -308,7 +314,7 @@ def _single(requirement: Requirement, item: Supply) -> MatchOption:
         requirement_id=requirement.id,
         allocations=[
             Allocation(
-                supply_id=item.id,
+                offer_id=item.id,
                 counterparty_id=item.counterparty_id,
                 quantity=take,
                 unit_price=item.unit_price or 0.0,
@@ -356,7 +362,7 @@ def _single_placement(buyer: Requirement, offer: Supply) -> MatchOption:
         requirement_id=offer.id,
         allocations=[
             Allocation(
-                supply_id=offer.id,
+                offer_id=buyer.id,
                 counterparty_id=buyer.counterparty_id,
                 quantity=take,
                 unit_price=buyer.unit_price or 0.0,
@@ -419,7 +425,7 @@ def _combinations(
             out.append(_build_combination(requirement, group))
 
     sweep = _sweep(requirement, exact, max_suppliers)
-    if sweep is not None and tuple(sorted(a.supply_id for a in sweep.allocations)) not in seen:
+    if sweep is not None and tuple(sorted(a.offer_id for a in sweep.allocations)) not in seen:
         out.append(sweep)
 
     return out
@@ -485,7 +491,7 @@ def _build_combination(requirement: Requirement, group: tuple[Supply, ...]) -> M
             continue
         allocations.append(
             Allocation(
-                supply_id=item.id,
+                offer_id=item.id,
                 counterparty_id=item.counterparty_id,
                 quantity=take,
                 unit_price=item.unit_price or 0.0,
