@@ -200,6 +200,45 @@ input:focus, select:focus {
 .login button[type="submit"]:hover:not([disabled]) { background: var(--accent-ink); }
 .login button[disabled] { opacity: 0.6; cursor: default; }
 
+/* The shared demo credentials, when VITE_DEMO_EMAIL and VITE_DEMO_PASSWORD are set.
+   Panel-toned and set below the button rather than beside the fields: it is a notice
+   about the account, not a third thing to fill in. */
+.demo {
+  margin-top: 4px;
+  padding: 14px 16px;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+}
+.demo-title {
+  margin: 0 0 10px;
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+.demo-creds {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 4px 12px;
+  margin: 0 0 10px;
+}
+.demo-creds dt {
+  font-size: 13px;
+  color: var(--muted);
+}
+.demo-creds dd {
+  margin: 0;
+  font-family: ui-monospace, SFMono-Regular, "Cascadia Mono", Consolas, monospace;
+  font-size: 13px;
+  /* Selectable and unambiguous: this is text somebody copies. */
+  user-select: all;
+  word-break: break-all;
+}
+.demo .small { margin: 10px 0 0; }
+
+
 /* ---------------------------------------------------------------- shell */
 
 .top {
@@ -374,10 +413,19 @@ main {
   border: 1px solid var(--line);
   border-radius: var(--radius);
   box-shadow: var(--shadow);
-  overflow: hidden;
+  /* `clip`, not `hidden`, and the difference is not cosmetic.
+     `overflow: hidden` makes this table its own scroll container, and a sticky <th>
+     then offsets from the TABLE rather than the page — so `top: 53px` pushed the header
+     53px down into the tbody, where it sat on top of the first row and hid it. With 500
+     rows that reads as a slightly odd first row; filtered to the one lot from a match it
+     hides everything but the last line, which is what made the match links look broken.
+     `clip` clips to the same rounded box without creating a scroll container, so sticky
+     resolves against the page — which is what the 53px was measured against. */
+  overflow: clip;
 }
 
 .offers th {
+  /* Pins under the 53px-tall sticky top bar once the board scrolls past it. */
   position: sticky;
   top: 53px;
   z-index: 10;
