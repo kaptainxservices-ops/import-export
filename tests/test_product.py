@@ -291,3 +291,27 @@ def test_expansion_is_reflected_in_identity():
     variants = expand_variants("A17 LTE DS SM-A175 4+128 — Black / Blue / Grey — €125")
     keys = {parse_product(v.text).identity_key() for v in variants}
     assert len(keys) == 3
+
+
+@pytest.mark.parametrize(
+    "line",
+    [
+        # Apple lists leads by what they connect and how long they are. The only word
+        # on the row the rules used to recognise was 'iPhone'.
+        "Iphone USB C to USB C MUF72ZM/A (1 Meter)",
+        "Iphone USB C to USB C MLL82ZM/A (2 Meter)",
+        "Apple USB-C to Lightning MX0K2ZM/A (1 m)",
+    ],
+)
+def test_a_lead_that_never_says_cable_is_still_an_accessory(line):
+    """Sorted cheapest first, these two sat at the very top of the phone board."""
+    assert parse_product(line).category == "accessory"
+
+
+def test_a_handset_that_charges_over_usb_c_is_still_a_handset():
+    """The reason the cable rule matches connector-TO-connector rather than 'USB'.
+
+    The iPhone 15 charges over USB-C, so a supplier will eventually put those letters on
+    a handset row. When they do, it must not fall off the phone board.
+    """
+    assert parse_product("Apple iPhone 15 128GB Black USB-C").category == "phone"

@@ -89,8 +89,18 @@ _BRANDS = [(re.compile(p, re.IGNORECASE), name) for p, name in _BRAND_ALIASES]
 # accessory, not a phone, and the word iPhone in it is describing compatibility.
 _CATEGORY_PATTERNS: list[tuple[str, str]] = [
     (r"\b(?:case|cover|sleeve|folio|pouch|bumper|wallet|holster)\b", "accessory"),
-    (r"\b(?:charger|cable|adapter|adaptor|power\s*bank|powerbank|battery\s*pack"
-     r"|magsafe|dock|cradle)\b", "accessory"),
+    (r"\b(?:charger|cable|kabel|cavo|c(?:a|\u00e2)ble|adapter|adaptor|power\s*bank"
+     r"|powerbank|battery\s*pack|magsafe|dock|cradle)\b", "accessory"),
+    # Cables that never say 'cable'. Apple's are listed by what they connect and how
+    # long they are — 'Iphone USB C to USB C MUF72ZM/A (1 Meter)' — so the only word on
+    # the line the old rules recognised was 'iPhone'.
+    #
+    # Matched narrowly on purpose. A bare 'USB' would be wrong: the iPhone 15 charges
+    # over USB-C and a supplier will eventually write that on a handset row. Connector
+    # *to* connector is unambiguous, and nothing but a lead is sold by the metre.
+    (r"\b(?:usb|type[\s-]?c|lightning|hdmi|aux|jack)\b[^\n]{0,24}\bto\b"
+     r"[^\n]{0,24}\b(?:usb|type[\s-]?c|lightning|hdmi|aux|jack)\b"
+     r"|\(\s*\d+(?:[.,]\d+)?\s*(?:m|cm|meter|metre|meters|metres)\s*\)", "accessory"),
     # Screen and lens protection, in the phrasings suppliers actually use. The corpus has
     # 'screen protector', 'Screen Protection', 'Camera Lens Protector', 'Privacy Glass',
     # '9H ECO Glass' and 'Temp Glass Full Glue' — only the first was ever matched, so 273
