@@ -65,6 +65,72 @@ def test_a_case_for_an_iphone_is_an_accessory_not_a_phone():
     assert spec.category == "accessory"
 
 
+@pytest.mark.parametrize(
+    "line",
+    [
+        # Screen protection, in the phrasings the corpus actually uses. Only the first
+        # of these was ever matched; the rest reached the board filed as handsets.
+        "Displex Privacy Glass for iPhone 14 = Displex 01707",
+        "Displex Safety Glass for Samsung Galaxy S22+/S23+ = 01773",
+        "PanzerGlass Classic Fit Screen Protection for Apple iPhone 15 Plus",
+        "PanzerGlass Hoops Camera Lens Protector for Samsung Galaxy A35 5G",
+        "QDOS OptiGuard 9H ECO Glass Plus for iPhone 15 / 16",
+        "Max Mobile Temp Glass Full Glue for Xiaomi Redmi Note 10 5G Black",
+        # Italian, from a real list. The product name beside it is in English, so with
+        # no Italian vocabulary the line reads as an iPhone.
+        "PROTEZIONE SCHERMO COMP.IPHONE 7/8 PLUS VETRO TEMP. (+ IVA)",
+        # The general rule, for the accessory nobody has listed a word for yet.
+        "Nudient Magnet Leather Wallet Midwinter Blue for iPhone 15",
+    ],
+)
+def test_screen_protection_is_an_accessory_not_a_phone(line):
+    """273 of 1,284 rows read as handsets were protectors naming the phone they fit.
+
+    On a board sorted cheapest first that is what a trader sees before any real stock,
+    and 'iPhone 15' at EUR 8.00 sitting above 'iPhone 15' at EUR 545.00 makes the
+    cheapest-first sort useless for the one thing it is for.
+    """
+    assert parse_product(line).category == "accessory"
+
+
+@pytest.mark.parametrize(
+    "line",
+    [
+        # Every one of these carries a word the accessory rules look for — 'sim',
+        # 'flip', 'glass' — and every one of them is a handset.
+        "TCL SMARTPHONE TCL 5041 DUAL SIM DARK NIGHT GREY",
+        "Google Pixel 10 Pro 5G Dual Sim 16GB RAM 128GB Obsidian DE",
+        "SAMSUNG GALAXY Z FLIP 7 F766B 256GB 12GB BLUE SHADOW EU",
+        "Samsung Galaxy S24 Ultra 512GB Gorilla Glass Victus Titanium Black",
+        "Apple iPhone 15 Pro Max 256GB Natural Titanium",
+    ],
+)
+def test_handsets_are_not_mistaken_for_accessories(line):
+    """The mirror of the rule above, and the more expensive direction to get wrong.
+
+    A protector filed as a phone is clutter; a EUR 900 handset filed as an accessory is
+    stock that disappears from the board a trader is searching.
+    """
+    assert parse_product(line).category == "phone"
+
+
+@pytest.mark.parametrize(
+    "line",
+    [
+        "Looking for iPhone 15 128GB, 50 pcs",
+        "WTB iPhone 16 Pro Max 256GB",
+        "We need Samsung Galaxy S25 - 100 units",
+    ],
+)
+def test_a_buyer_asking_for_a_phone_still_wants_a_phone(line):
+    """'for iPhone' means compatibility on a seller's line and demand on a buyer's.
+
+    Reading a WTB as an accessory would file real handset demand under the wrong
+    category, which is worse than the leak the compatibility rule exists to close.
+    """
+    assert parse_product(line).category == "phone"
+
+
 # ---------------------------------------------------------------- capacity & RAM
 
 @pytest.mark.parametrize(

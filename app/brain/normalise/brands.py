@@ -88,9 +88,26 @@ _BRANDS = [(re.compile(p, re.IGNORECASE), name) for p, name in _BRAND_ALIASES]
 # attributes apply. Accessory patterns come first: 'Case for iPhone 11' is an
 # accessory, not a phone, and the word iPhone in it is describing compatibility.
 _CATEGORY_PATTERNS: list[tuple[str, str]] = [
-    (r"\b(?:case|cover|sleeve|screen\s*protector|tempered\s*glass|folio)\b", "accessory"),
-    (r"\b(?:charger|cable|adapter|power\s*bank|powerbank|battery\s*pack|magsafe|dock)\b",
-     "accessory"),
+    (r"\b(?:case|cover|sleeve|folio|pouch|bumper|wallet|holster)\b", "accessory"),
+    (r"\b(?:charger|cable|adapter|adaptor|power\s*bank|powerbank|battery\s*pack"
+     r"|magsafe|dock|cradle)\b", "accessory"),
+    # Screen and lens protection, in the phrasings suppliers actually use. The corpus has
+    # 'screen protector', 'Screen Protection', 'Camera Lens Protector', 'Privacy Glass',
+    # '9H ECO Glass' and 'Temp Glass Full Glue' — only the first was ever matched, so 273
+    # protectors were reaching the board filed as handsets.
+    #
+    # The bare word 'glass' is deliberately NOT enough: a handset listed with 'Gorilla
+    # Glass Victus' is still a handset. Glass counts when it is qualified as protection,
+    # or when the line goes on to say what it is *for*.
+    (r"\b(?:screen|lens|camera)\s*protect\w*"
+     r"|\bprotect(?:or|ion)\s+(?:for|glass)\b"
+     r"|\b(?:privacy|safety|temp|tempered|eco|9h|full\s*glue|panzer|optiguard)\s*glass\b"
+     r"|\bglass\b(?=[^\n]{0,40}\bfor\b)", "accessory"),
+    # The same words in the other languages the corpus arrives in. The product name beside
+    # them is in English either way, so without these the line reads as a handset.
+    (r"\b(?:h(?:u|\u00fc)lle|etui|folie|schutzglas|panzerglas|displayschutz"
+     r"|coque|verre\s*tremp\w*|protezione|schermo|pellicola|vetro"
+     r"|funda|cristal|protetor|capa)\b", "accessory"),
     (r"\b(?:airpods?|earbuds?|headphones?|headset|speaker|soundbar|buds)\b", "audio"),
     (r"\b(?:watch|band|amazfit|smartwatch)\b", "wearable"),
     (r"\b(?:playstation|ps5|ps4|xbox|switch|console|controller|dualsense)\b", "console"),
@@ -136,12 +153,41 @@ def detect_brand(text: str | None) -> str | None:
     return None
 
 
+# A line that names a handset *after* the word 'for' is saying what the item fits, not
+# what is being sold. This is the general form of the rule — it catches the accessory
+# nobody has thought to list a word for yet, as long as it states its compatibility.
+_COMPATIBLE_WITH = re.compile(
+    r"\b(?:for|f(?:u|\u00fc)r|fuer|per|voor|para)\s+"
+    r"(?:apple\s+|samsung\s+|xiaomi\s+|google\s+|sony\s+)?"
+    r"(?:iphone|galaxy|pixel|redmi|xperia)\b"
+    r"|\bcomp\.?\s*(?:iphone|galaxy|pixel)\b",
+    re.IGNORECASE,
+)
+
+# ...except on a buyer's line. 'Looking for iPhone 15 128GB' is demand for handsets, and
+# reading it as an accessory would file real demand under the wrong category — which is
+# worse than the leak this rule exists to close.
+_STATES_DEMAND = re.compile(
+    r"\b(?:looking|search\w*|need\w*|want\w*|wtb|require\w*|interested|rfq|enquir\w*)\b",
+    re.IGNORECASE,
+)
+
+
 def detect_category(text: str | None) -> str | None:
     """Best-effort category. None is acceptable — category filters the board, it is
     not part of identity, so an unknown one costs a filter rather than a mismatch."""
     if not text:
         return None
+
+    found = None
     for pattern, name in _CATEGORIES:
         if pattern.search(text):
-            return name
-    return None
+            found = name
+            break
+
+    # Only ever downgrades a handset verdict. A row already read as audio or a wearable
+    # is left alone: 'earbuds for iPhone' are still earbuds.
+    if found == "phone" and _COMPATIBLE_WITH.search(text) and not _STATES_DEMAND.search(text):
+        return "accessory"
+
+    return found
