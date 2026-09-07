@@ -89,6 +89,15 @@ _BRANDS = [(re.compile(p, re.IGNORECASE), name) for p, name in _BRAND_ALIASES]
 # accessory, not a phone, and the word iPhone in it is describing compatibility.
 _CATEGORY_PATTERNS: list[tuple[str, str]] = [
     (r"\b(?:case|cover|sleeve|folio|pouch|bumper|wallet|holster)\b", "accessory"),
+    # What the accessory is made of, or what it does, where the row never says 'case'.
+    # Samsung name theirs '<model> <material>, <colour>' — 'Galaxy S25 FE Silicone,
+    # Black' is a silicone case and 'Galaxy A17 Clear, Transparent' is a clear one.
+    # 'Clear' is required to sit before a comma: it is a product there, whereas a bare
+    # 'transparent' is a colour, and the Nothing Phone is genuinely sold in it.
+    (r"\b(?:silicone|leather|kevlar|aramid)\b"
+     r"|\bclear\b(?=\s*,)"
+     r"|\b(?:film|sticker|decal|skin|strap|crossbody|lanyard|grip|tripod)\b"
+     r"|\b(?:s\s*pen|stylus|selfie\s*stick|ring\s*holder|charging\s*pad)\b", "accessory"),
     (r"\b(?:charger|cable|kabel|cavo|c(?:a|\u00e2)ble|adapter|adaptor|power\s*bank"
      r"|powerbank|battery\s*pack|magsafe|dock|cradle)\b", "accessory"),
     # Cables that never say 'cable'. Apple's are listed by what they connect and how
@@ -121,13 +130,14 @@ _CATEGORY_PATTERNS: list[tuple[str, str]] = [
     (r"\b(?:airpods?|earbuds?|headphones?|headset|speaker|soundbar|buds)\b", "audio"),
     (r"\b(?:watch|band|amazfit|smartwatch)\b", "wearable"),
     (r"\b(?:playstation|ps5|ps4|xbox|switch|console|controller|dualsense)\b", "console"),
-    (r"\b(?:ipad|tab\b|tablet)\b", "tablet"),
+    (r"\b(?:ipad|tab\b|tablet|pad)\b", "tablet"),
     (r"\b(?:tv|dled|qled|oled\s*tv|smart\s*tv|television)\b", "tv"),
     (r"\b(?:laptop|notebook|macbook|thinkpad|chromebook)\b", "computer"),
     # No outer \b on this one: 'Galaxy A56' would fail a trailing boundary after
     # matching only 'Galaxy A5', which silently left every Samsung phone uncategorised.
     (r"(?:\biphone\b|\bgalaxy\s*[sazfm]?\d+|\bgalaxy\s*z\s*(?:flip|fold)"
-     r"|\bpixel\s*\d+|\bsmartphone\b|\bredmi\b|\bmoto\s*[ge]\b|\bxcover\b)", "phone"),
+     r"|\bpixel\s*\d+|\bsmartphone\b|\bnothing\s*phone\b|\bredmi\b"
+     r"|\bmoto\s*[ge]\b|\bxcover\b)", "phone"),
     (r"\b(?:mask|kn95|ffp2|hand\s*gel|sanitiser|sanitizer|antigen|test\s*kit)\b", "other"),
 ]
 

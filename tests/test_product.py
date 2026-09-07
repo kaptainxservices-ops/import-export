@@ -315,3 +315,55 @@ def test_a_handset_that_charges_over_usb_c_is_still_a_handset():
     a handset row. When they do, it must not fall off the phone board.
     """
     assert parse_product("Apple iPhone 15 128GB Black USB-C").category == "phone"
+
+
+@pytest.mark.parametrize(
+    "line",
+    [
+        # Named by what they are made of, or what they do, and never 'case'.
+        "Samsung Galaxy S25 FE Silicone, Black",
+        "Samsung Galaxy A17 Clear, Transparent",
+        "Samsung Galaxy S25 FE Standing Grip, Black",
+        "Samsung Galaxy Z Fold7 Anti-reflecting Film, Transparent",
+        "Galaxy A57 - Protective Film, Transparent",
+        "Samsung Galaxy S25 Ultra - PA3 S Pen, Black",
+        "iPhone 16/ 16 Pro/ 16 Pro Max /16 plus seal sticker",
+        "iPhone CrossBody Strap",
+    ],
+)
+def test_accessories_named_by_material_or_function(line):
+    """Found by listing every word left on rows filed as phones once brands, models,
+    capacities and colours were stripped out. Whatever survived that was the product.
+    """
+    assert parse_product(line).category == "accessory"
+
+
+@pytest.mark.parametrize(
+    "line",
+    [
+        "Redmi Pad 2 4+128GB",
+        "TABLET REDMI PAD 2 128GB 4GB RAM MINT GREEN EU OEM",
+        "Honor Magic Pad 4 wifi 12+256GB",
+        "OnePlus Pad Go 2 12.1 5G 8GB RAM 256GB Shadow Black EU",
+        "ULEFONE ARMOR PAD 3 PRO 10.36'' 4G 8/256GB BLACK",
+    ],
+)
+def test_a_pad_is_a_tablet(line):
+    """The tablet rule knew 'iPad', 'Tab' and 'tablet'. Everyone else calls theirs a
+    Pad, so 109 tablets were sitting on the phone board."""
+    assert parse_product(line).category == "tablet"
+
+
+@pytest.mark.parametrize(
+    "line",
+    [
+        # 'Box damaged' is a note about the packaging of a real handset.
+        "SAMSUNG S948 GALAXY S26 ULTRA 256GB 12GB RAM 5G DS BLACK (BOX DANNEG)",
+        # Transparent is a colour this handset is genuinely sold in, which is why the
+        # 'Clear' rule requires a comma after it rather than matching either word.
+        "Nothing Phone 2 256GB Transparent",
+        "Samsung Galaxy A37 A376 5G Dual Sim 6GB RAM 128GB Awesome Charcoal DE",
+    ],
+)
+def test_handsets_survive_the_accessory_vocabulary(line):
+    assert parse_product(line).category == "phone"
