@@ -248,8 +248,18 @@ export async function closeDeal(
   );
 }
 
-export async function fetchMatchBoard(): Promise<MatchBoard> {
-  return json<MatchBoard>(await authorised("/matches/board"), "Matching the board");
+export async function fetchMatchBoard(
+  filters: { brand?: string; category?: string } = {},
+): Promise<MatchBoard> {
+  const query = new URLSearchParams();
+  if (filters.brand) query.set("brand", filters.brand);
+  if (filters.category) query.set("category", filters.category);
+  const suffix = query.toString() ? `?${query}` : "";
+
+  return json<MatchBoard>(
+    await authorised(`/matches/board${suffix}`),
+    "Matching the board",
+  );
 }
 
 export async function fetchSuppliers(): Promise<Suppliers> {

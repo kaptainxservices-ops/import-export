@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 
+import { useFacets } from "../hooks/useOffers";
 import { fetchMatchBoard, type MatchBoard as Board, type MatchBoardRow } from "../lib/api";
 import { bigMoney, money } from "../lib/money";
 
@@ -19,32 +20,107 @@ export function MatchBoard({ onOpen }: { onOpen: (row: MatchBoardRow) => void })
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
+  // Which slice of demand to rank. Everything by default, because the morning question
+  // is "where is the money" rather than "where is the money in phones" — but a trader
+  // working one product type cannot get there otherwise, since the highest-margin rows
+  // crowd every other category off the top of the screen.
+  const [brand, setBrand] = useState("");
+  const [category, setCategory] = useState("");
+
+  // Facets come from the buy side: these narrow requirements, so offering a brand
+  // nobody has asked for would be a filter that can only ever return nothing.
+  const { brands, categories } = useFacets("buy");
+
   useEffect(() => {
+    let cancelled = false;
+    setLoading(true);
+    setError(null);
+
     void (async () => {
       try {
-        setBoard(await fetchMatchBoard());
+        const next = await fetchMatchBoard({ brand, category });
+        if (!cancelled) setBoard(next);
       } catch (problem) {
-        setError(problem instanceof Error ? problem.message : String(problem));
+        if (!cancelled) {
+          setError(problem instanceof Error ? problem.message : String(problem));
+        }
       } finally {
-        setLoading(false);
+        if (!cancelled) setLoading(false);
       }
     })();
-  }, []);
 
-  if (loading) return <p className="muted">Matching the whole board…</p>;
+    return () => {
+      cancelled = true;
+    };
+  }, [brand, category]);
+
   if (error) return <p className="error">{error}</p>;
-  if (!board) return null;
+
+  const filters = (
+    <div className="filters">
+      <select value={brand} onChange={(e) => setBrand(e.target.value)}>
+        <option value="">All brands</option>
+        {brands.map((b) => (
+          <option key={b} value={b}>
+            {b}
+          </option>
+        ))}
+      </select>
+
+      <select value={category} onChange={(e) => setCategory(e.target.value)}>
+        <option value="">All product types</option>
+        {categories.map((c) => (
+          <option key={c} value={c}>
+            {c}
+          </option>
+        ))}
+      </select>
+
+      {(brand || category) && (
+        <button
+          className="link"
+          onClick={() => {
+            setBrand("");
+            setCategory("");
+          }}
+        >
+          show everything
+        </button>
+      )}
+
+      {board && (
+        <span className="count">{board.rows.length.toLocaleString()} requirements</span>
+      )}
+    </div>
+  );
+
+  // The filter bar stays put while a new slice loads. Replacing the whole screen with a
+  // spinner on every change takes away the control the trader is currently using.
+  if (!board) {
+    return (
+      <>
+        {filters}
+        {loading && <p className="muted">Matching the whole board…</p>}
+      </>
+    );
+  }
 
   if (board.rows.length === 0) {
     return (
-      <p className="empty">
-        No buyer requirements on the board yet. They arrive as WTB emails are read.
-      </p>
+      <>
+        {filters}
+        <p className="empty">
+          {brand || category
+            ? "Nothing is being asked for in that slice of the board."
+            : "No buyer requirements on the board yet. They arrive as WTB emails are read."}
+        </p>
+      </>
     );
   }
 
   return (
     <>
+      {filters}
       <div className="tiles">
         <Tile label="Live matches" value={String(board.live_matches)} />
         <Tile label="Unmet demand" value={String(board.unmet_demand)} tone="warn" />

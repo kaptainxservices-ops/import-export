@@ -115,6 +115,8 @@ class BoardOut(BaseModel):
 @router.get("/board", response_model=BoardOut, summary="Every buyer requirement, matched")
 def board(
     limit: int = Query(300, ge=1, le=1000),
+    brand: str | None = Query(None, description="Only requirements for this brand"),
+    category: str | None = Query(None, description="Only requirements in this category"),
     context=Depends(current_tenant),
 ) -> BoardOut:
     """Run the matching engine across the whole board, not one row at a time.
@@ -130,7 +132,7 @@ def board(
     """
     tenant_id, repository = context
 
-    demand = repository.load_board(tenant_id, "buy")
+    demand = narrow(repository.load_board(tenant_id, "buy"), brand, category)
     supply_offers = repository.load_board(tenant_id, "sell")
     supply = [_supply(o) for o in supply_offers]
 
@@ -285,6 +287,28 @@ def place(
 
 
 # ---------------------------------------------------------------- plumbing
+
+
+def narrow(
+    demand: list[BoardOffer], brand: str | None, category: str | None
+) -> list[BoardOffer]:
+    """The requirements a filtered board should rank.
+
+    Only the *demand* is narrowed, never the supply. A buyer wanting a tablet is still
+    matched against the whole board — filtering supply to the same category as well
+    would hide the combination that fills the order, which is the one thing this screen
+    exists to find. Matching already gates on category internally, so nothing irrelevant
+    gets through anyway.
+
+    The effect is that the tiles describe the slice being looked at rather than the
+    board as a whole, which is what makes "where is the money in tablets today" a
+    question this screen can answer.
+    """
+    if brand:
+        demand = [o for o in demand if (o.brand or "").casefold() == brand.casefold()]
+    if category:
+        demand = [o for o in demand if (o.category or "").casefold() == category.casefold()]
+    return demand
 
 
 def _require(offer: BoardOffer | None) -> BoardOffer:
