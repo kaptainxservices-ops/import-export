@@ -156,6 +156,88 @@ def test_accessories_have_no_capacity():
     assert parse_product("4smarts Pico Dual 20W Car Charger").capacity_gb is None
 
 
+@pytest.mark.parametrize(
+    ("line", "capacity"),
+    [
+        # Every shape below reached the board with NO capacity at all, which is worse
+        # than it sounds: capacity is part of identity, so the 256GB and the 512GB lot
+        # of one handset became a single row and one of the two prices vanished.
+        ("Samsung Galaxy A37 A376 5G Dual Sim 6GB RAM 128GB Awesome Charcoal DE", 128),
+        ("Samsung Galaxy S25 S931 5G/DS/NFC/12GB RAM - 256GB Blueblack", 256),
+        ("APPLE IPHONE 17 PRO MAX 256 COSMIC ORANGE EU OEM", 256),
+        ("REDMI NOTE 14 PRO PLUS 5G 8/256 MIDNIGHT BLACK", 256),
+        ("Apple iPhone 17 Pro 1000 GB (1TB) silver", 1024),
+        ("APPLE IPHONE AIR 1TGB SKY BLUE EU OEM", 1024),
+        # Two sizes in a row, neither saying which is which. Left to right the 8 wins,
+        # and 8GB is a legal storage size, so every storage variant became one identity.
+        ('MacBook Neo 13" A18 Pro 6C CPU 5C GPU 8GB 256GB', 256),
+    ],
+)
+def test_capacity_survives_the_ways_suppliers_write_it(line, capacity):
+    assert parse_product(line).capacity_gb == capacity
+
+
+@pytest.mark.parametrize(
+    "line",
+    [
+        # 16, 32 and 64 are model numbers as often as they are sizes, so a bare figure
+        # is only read from 128 up. Getting this backwards turns a handset into a 16GB one.
+        "Apple iPhone 16 Black",
+        "Samsung Galaxy A56 5G Awesome Graphite",
+        # A count is not a size.
+        "iPhone 15 Pro Max Natural Titanium 128 pcs",
+    ],
+)
+def test_a_model_number_is_not_a_capacity(line):
+    assert parse_product(line).capacity_gb in (None, 256, 512, 1024)
+
+
+# ------------------------------------------------- identity: variants of one handset
+
+@pytest.mark.parametrize(
+    ("left", "right"),
+    [
+        # Automic list these on consecutive lines at different prices. Treating the
+        # qualifier as noise made them one identity, so the second overwrote the first
+        # and one price never reached the board.
+        ("A37 SM-A376B 5G 6+128 Charcoal", "A37 SM-A376B 5G 6+128 Ent. Ed. — Charcoal"),
+        ("S25 S931B 5G DS 12+128 — Silver Shadow", "S25 S931B 5G DS 12+128 OM — Silver Shadow"),
+        # Same storage, different memory. The pair was being dropped wholesale.
+        ("Realme P4 Power 12+256GB", "Realme P4 Power 8+256GB"),
+        # Same machine, different storage, and neither size labelled.
+        ('MacBook Neo 13" A18 Pro 8GB 256GB', 'MacBook Neo 13" A18 Pro 8GB 512GB'),
+    ],
+)
+def test_different_stock_keeps_different_identities(left, right):
+    """Two rows sharing an identity is not a cosmetic problem.
+
+    Reconciliation treats the second as an update of the first, so one supplier's price
+    is overwritten by another line of their own list and never appears on the board. The
+    trader sees one option where two exist.
+    """
+    assert parse_product(left).identity_key() != parse_product(right).identity_key()
+
+
+@pytest.mark.parametrize(
+    ("left", "right"),
+    [
+        ("A37 SM-A376B 5G 6+128 Ent. Ed. — Charcoal",
+         "A37 SM-A376B 5G 6+128 Enterprise Edition — Charcoal"),
+        ("A37 SM-A376B 5G 6+128 Ent Edition — Charcoal",
+         "A37 SM-A376B 5G 6+128 Ent. Ed. — Charcoal"),
+    ],
+)
+def test_one_lot_spelled_two_ways_keeps_one_identity(left, right):
+    """The other half of the rule, and the destructive half if it is got wrong.
+
+    A supplier writing 'Ent. Ed.' on Monday and 'Enterprise Edition' on Tuesday must
+    still update one row. If the key moved with the spelling, Monday's row would be
+    absent from Tuesday's list, read as sold, and closed — which is how live stock
+    disappears from the board.
+    """
+    assert parse_product(left).identity_key() == parse_product(right).identity_key()
+
+
 # ---------------------------------------------------------------- EAN identity
 
 def test_ean_is_extracted_from_the_line():

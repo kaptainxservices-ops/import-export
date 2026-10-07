@@ -26,10 +26,40 @@ from app.brain.normalise.colours import normalise_colour
 from app.brain.normalise.grades import normalise_grade
 from app.brain.normalise.regions import normalise_region_code
 
-# '8+256', '12+1TB' — RAM first, then storage.
-_RAM_STORAGE = re.compile(r"\b(?P<ram>\d{1,2})\s*\+\s*(?P<storage>\d{1,4})\s*(?P<u>gb|tb)?\b",
-                          re.IGNORECASE)
+# '8+256', '12+1TB', '8/256' — RAM first, then storage. The slash form is Xiaomi's.
+_RAM_STORAGE = re.compile(
+    r"\b(?P<ram>\d{1,2})\s*[+/]\s*(?P<storage>\d{1,4})\s*(?P<u>gb|tb)?\b", re.IGNORECASE
+)
 _CAPACITY = re.compile(r"\b(?P<n>\d{1,4})\s*(?P<u>gb|tb)\b", re.IGNORECASE)
+
+# Two sizes in a row, both carrying a unit and neither saying which is which:
+# 'MacBook Neo 13" A18 Pro 6C CPU 5C GPU 8GB 256GB'. Read left to right the first wins,
+# and 8 is a legal storage size, so the row took 8GB as its capacity — which made every
+# storage variant of that machine one identity.
+_RAM_THEN_STORAGE = re.compile(
+    r"\b(?P<ram>\d{1,2})\s*gb\s+(?P<storage>\d{2,4})\s*(?P<u>gb|tb)\b", re.IGNORECASE
+)
+
+# '12GB RAM' names the memory, not the storage. Without this the first size on
+# 'Dual Sim 6GB RAM 128GB Black' wins, is rejected as an impossible storage size, and
+# the row reaches the board with no capacity at all.
+_NAMES_RAM = re.compile(r"\s*(?:ram|memory)\b", re.IGNORECASE)
+
+# What a supplier writes when the figure came out of a spreadsheet column rather than a
+# marketing name. Nobody ships a 1000GB phone; they mean 1TB.
+_ROUNDED = {1000: 1024, 2000: 2048}
+
+# 'APPLE IPHONE AIR 1TGB SKY BLUE' — a typo for 1TB, made consistently by one supplier.
+_TYPO_TB = re.compile(r"\b(?P<n>\d{1,2})\s*t\s*gb\b", re.IGNORECASE)
+
+# A capacity written with no unit at all: 'IPHONE 17 PRO MAX 256 COSMIC ORANGE'.
+# Only 128 and up are read bare, because 16, 32 and 64 are also model numbers and
+# 'Apple iPhone 16 Black' must not become a 16GB handset. The lookahead keeps a
+# quantity out of it — '128 pcs' is a count, not a size.
+_BARE_CAPACITY = re.compile(
+    r"\b(?P<n>128|256|512|1024|2048)\b(?!\s*(?:pcs|pieces|units?|stk|pz|ks)\b)",
+    re.IGNORECASE,
+)
 
 _VALID_GB = {8, 16, 32, 64, 128, 256, 512, 1024, 2048}
 
@@ -41,6 +71,10 @@ _VALID_RAM_GB = {1, 2, 3, 4, 6, 8, 12, 16, 18, 24, 32}
 _NETWORK = re.compile(r"\b(5g|4g|lte)\b", re.IGNORECASE)
 _DUAL_SIM = re.compile(r"\b(?:ds|dual\s*sim|duos)\b", re.IGNORECASE)
 _EDITION = re.compile(r"\b(?:ent\.?\s*ed\.?|enterprise\s*edition|ent\s*edition)\b", re.IGNORECASE)
+
+# 'OM' is open-market stock: the same handset without a carrier's or a region's
+# customisation, and priced differently. Suppliers list it beside the standard lot.
+_OPEN_MARKET = re.compile(r"\bom\b", re.IGNORECASE)
 
 # EANs are 8 or 13 digits. Some suppliers export them with a leading apostrophe to stop
 # Excel mangling them into scientific notation.
@@ -149,7 +183,23 @@ def build_description_key(text: str) -> str:
     128GB Gray' and 'A56 5G DS SM-A566B 8+128 Awesome Graphite' both reduce to
     something centred on 'a56'/'a566'.
     """
-    text = _RAM_STORAGE.sub(" ", text)
+    # Canonicalised before anything is discarded, and deliberately NOT discarded.
+    #
+    # An Enterprise Edition lot and a standard one are different stock at different
+    # prices, and Automic lists both on consecutive lines. Treating 'Ent. Ed.' as noise
+    # made the two one identity, so the second line overwrote the first and one of the
+    # prices never reached the board. Same for open-market stock.
+    #
+    # One canonical spelling rather than the supplier's, so a list saying 'Ent. Ed.' on
+    # Monday and 'Enterprise Edition' on Tuesday still updates one row instead of
+    # opening a second alongside it.
+    text = _EDITION.sub(" entedition ", text)
+    text = _OPEN_MARKET.sub(" openmarket ", text)
+
+    # The memory figure stays too. '12+256' and '8+256' are different phones and are
+    # priced apart; dropping the pair wholesale left them sharing one identity. Storage
+    # is not kept here — it is already its own column in the key.
+    text = _RAM_STORAGE.sub(lambda m: f" ram{m.group('ram')} ", text)
     text = _CAPACITY.sub(" ", text)
     text = _NOISE_TOKENS.sub(" ", text)
     text = _COLOUR_NOISE.sub(" ", text)
@@ -258,29 +308,69 @@ _COLOUR_WORDS = {
 
 
 def _parse_ram_and_capacity(raw: str) -> tuple[int | None, int | None, str | None]:
-    """Samsung's '8+256' means 8GB RAM and 256GB storage — the first number is RAM."""
-    match = _RAM_STORAGE.search(raw)
+    """Samsung's '8+256' means 8GB RAM and 256GB storage — the first number is RAM.
+
+    Capacity is part of identity, so a handset that reaches the board without one does
+    not merely look incomplete: it collides with every other capacity of the same model
+    in the same colour, and one of the two prices silently never appears. Each branch
+    below is a shape a real supplier writes that used to produce nothing at all.
+    """
+    # A RAM+storage pair, believed only when BOTH halves are plausible. 'iPhone 15/15
+    # Pro 256GB' is a compatibility list, not 15GB of RAM — and reading it as one used
+    # to stop the search before the real capacity further along the line.
+    for match in _RAM_STORAGE.finditer(raw):
+        ram = int(match.group("ram"))
+        storage = int(match.group("storage"))
+        if (match.group("u") or "").lower() == "tb":
+            storage *= 1024
+        storage = _ROUNDED.get(storage, storage)
+        if ram in _VALID_RAM_GB and storage in _VALID_GB:
+            return ram, storage, None
+
+    # Two sizes side by side, smaller first: memory then storage, the same reading as
+    # '8+256'. Believed only when each half is plausible for its own role.
+    match = _RAM_THEN_STORAGE.search(raw)
     if match:
         ram = int(match.group("ram"))
         storage = int(match.group("storage"))
         if (match.group("u") or "").lower() == "tb":
             storage *= 1024
-        return (
-            ram if ram in _VALID_RAM_GB else None,
-            storage if storage in _VALID_GB else None,
-            None if storage in _VALID_GB else f"implausible capacity {storage}",
-        )
+        storage = _ROUNDED.get(storage, storage)
+        if ram in _VALID_RAM_GB and storage in _VALID_GB and ram < storage:
+            return ram, storage, None
 
-    match = _CAPACITY.search(raw)
-    if match:
+    # A size carrying a unit. Any the line goes on to call RAM is kept as the RAM
+    # figure and passed over, rather than being taken for the storage.
+    ram_named: int | None = None
+    implausible: int | None = None
+    for match in _CAPACITY.finditer(raw):
         value = int(match.group("n"))
         if (match.group("u") or "").lower() == "tb":
             value *= 1024
+        if _NAMES_RAM.match(raw, match.end()):
+            if ram_named is None and value in _VALID_RAM_GB:
+                ram_named = value
+            continue
+        value = _ROUNDED.get(value, value)
         if value in _VALID_GB:
-            return None, value, None
-        return None, None, f"implausible capacity {value}"
+            return ram_named, value, None
+        if implausible is None:
+            implausible = value
 
-    return None, None, None
+    match = _TYPO_TB.search(raw)
+    if match:
+        value = int(match.group("n")) * 1024
+        if value in _VALID_GB:
+            return ram_named, value, None
+
+    match = _BARE_CAPACITY.search(raw)
+    if match:
+        return ram_named, int(match.group("n")), None
+
+    if implausible is not None:
+        return ram_named, None, f"implausible capacity {implausible}"
+
+    return ram_named, None, None
 
 
 def _find_colour(raw: str) -> str | None:
