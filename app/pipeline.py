@@ -19,9 +19,10 @@ import base64
 import binascii
 import logging
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 
 from app.brain.classify import Classification, classify_side
+from app.brain.companies import find_unique
 from app.brain.completeness import detect_list_completeness
 from app.brain.confidence import score_row
 from app.brain.llm import UsageLog, classify_side_llm, mapper_for
@@ -185,6 +186,31 @@ def process_email(payload: InboundEmail, repo: Repository) -> PipelineResult:
         counterparty = repo.find_counterparty(tenant.id, sender.email)
         if counterparty is None:
             counterparty = repo.create_counterparty(tenant.id, sender.email, sender.name)
+
+    elif sender.method == "subject_company" and sender.name:
+        # No address anywhere in the message — an offer somebody retyped out of
+        # WhatsApp, with the supplier's name only in the subject. Refusing to guess is
+        # right the first time and a tax by the twentieth: once a person has said who
+        # Vadimpex is, asking again every morning is not caution.
+        #
+        # Only an unambiguous match counts. Two candidates is not a near miss to be
+        # broken by picking the better one, it is the signal that the name is not
+        # enough — and filing a catalogue against the wrong supplier corrupts two
+        # boards at once, while one more email in the queue costs a click.
+        known = find_unique(sender.name, repo.list_counterparties(tenant.id))
+        if known is not None:
+            counterparty = known
+            sender = replace(
+                sender,
+                email=known.primary_email,
+                name=known.name or sender.name,
+                method="known_company",
+                # Below an address read off the envelope, above a guess. The name was
+                # right the day a human attached it to this supplier; it is not proof
+                # that today's list came from them.
+                confidence=0.75,
+                needs_review=False,
+            )
 
     email_id = repo.save_email(
         EmailRecord(

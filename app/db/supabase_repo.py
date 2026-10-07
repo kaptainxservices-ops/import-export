@@ -145,6 +145,17 @@ class SupabaseRepository:
         ).data
         return _counterparty(rows[0]) if rows else None
 
+    def list_counterparties(self, tenant_id: str) -> list[CounterpartyConfig]:
+        """Every counterparty on this board, for matching a name against.
+
+        Paged, because a broker with a long history has thousands and a half-read list
+        would mean a supplier is 'unknown' on Tuesday and known again on Wednesday.
+        """
+        rows = _all_rows(
+            lambda: self.client.table("counterparties").select("*").eq("tenant_id", tenant_id)
+        )
+        return [_counterparty(row) for row in rows]
+
     def get_counterparty(self, tenant_id: str, counterparty_id: str) -> CounterpartyConfig | None:
         rows = (
             self.client.table("counterparties")

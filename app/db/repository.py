@@ -42,6 +42,16 @@ class Repository(Protocol):
     def get_counterparty(self, tenant_id: str, counterparty_id: str) -> CounterpartyConfig | None:
         ...
 
+    def list_counterparties(self, tenant_id: str) -> list[CounterpartyConfig]:
+        """Every counterparty on this board.
+
+        Used to match a company named in a subject line against suppliers somebody has
+        already identified. Returned whole rather than searched in SQL because the
+        matching rules are judgement — legal suffixes, distinctiveness, ambiguity — and
+        that belongs in `app/brain/companies.py` where it is tested, not in a LIKE.
+        """
+        ...
+
     def create_counterparty(
         self, tenant_id: str, email: str, name: str | None
     ) -> CounterpartyConfig:

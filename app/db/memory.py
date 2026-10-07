@@ -77,6 +77,11 @@ class InMemoryRepository:
     def __init__(self, tenants: list[TenantConfig] | None = None) -> None:
         self.tenants = {t.id: t for t in (tenants or [])}
         self.counterparties: dict[str, CounterpartyConfig] = {}
+        # CounterpartyConfig carries no tenant_id -- the real table does, and every
+        # query there filters on it. Without this the double answered every lookup from
+        # every tenant's suppliers, so the isolation tests were passing on a store that
+        # had no isolation to test.
+        self.counterparty_tenant: dict[str, str] = {}
         self.emails: dict[str, EmailRecord] = {}
         self.seen_message_ids: set[tuple[str, str]] = set()
         self.offers: dict[str, StoredOffer] = {}
@@ -95,18 +100,31 @@ class InMemoryRepository:
 
     def find_counterparty(self, tenant_id: str, email: str) -> CounterpartyConfig | None:
         for cp in self.counterparties.values():
-            if cp.primary_email.lower() == email.lower():
+            if (
+                self.counterparty_tenant.get(cp.id) == tenant_id
+                and cp.primary_email.lower() == email.lower()
+            ):
                 return cp
         return None
 
     def get_counterparty(self, tenant_id: str, counterparty_id: str) -> CounterpartyConfig | None:
+        if self.counterparty_tenant.get(counterparty_id) != tenant_id:
+            return None
         return self.counterparties.get(counterparty_id)
+
+    def list_counterparties(self, tenant_id: str) -> list[CounterpartyConfig]:
+        return [
+            cp
+            for cp in self.counterparties.values()
+            if self.counterparty_tenant.get(cp.id) == tenant_id
+        ]
 
     def create_counterparty(
         self, tenant_id: str, email: str, name: str | None
     ) -> CounterpartyConfig:
         cp = CounterpartyConfig(id=self._next("cp"), primary_email=email, name=name)
         self.counterparties[cp.id] = cp
+        self.counterparty_tenant[cp.id] = tenant_id
         return cp
 
     # ---------------------------------------------------------------- emails
