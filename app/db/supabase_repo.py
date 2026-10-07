@@ -32,6 +32,23 @@ from app.db.models import (
 
 log = logging.getLogger(__name__)
 
+# PostgREST answers one request with one page. How big that page is depends on the
+# deployment's `db-max-rows`, which is not ours to choose and not visible from here —
+# so asking for "everything" and trusting what comes back is a bet on a setting that
+# can change underneath us.
+#
+# Losing that bet is not a short list. `load_live_offers` feeds reconciliation: if a
+# supplier has 1,630 live offers and only 1,000 come back, the other 630 look like rows
+# the supplier has stopped offering, and reconciliation's job is to close exactly those.
+# A silent page limit would read as six hundred lots sold.
+_PAGE = 1000
+
+# A supplier sending more than this in one list is not a supplier, it is a bug. Stopping
+# with a complaint beats paging forever.
+_MAX_ROWS = 100_000
+
+
+
 
 def get_client() -> Any:
     """Build the Supabase client. Imported lazily so tests never need the package.
@@ -193,15 +210,16 @@ class SupabaseRepository:
     def load_live_offers(
         self, tenant_id: str, counterparty_id: str, side: str
     ) -> list[ExistingOffer]:
-        rows = (
-            self.client.table("offers")
+        # Paged. This is the query reconciliation compares against, so a row missing
+        # from it is a row about to be closed as sold.
+        rows = _all_rows(
+            lambda: self.client.table("offers")
             .select("id,identity_key,quantity,unit_price,currency,status,last_confirmed_at")
             .eq("tenant_id", tenant_id)
             .eq("counterparty_id", counterparty_id)
             .eq("side", side)
             .eq("status", "live")
-            .execute()
-        ).data
+        )
 
         return [
             ExistingOffer(
@@ -891,16 +909,21 @@ class SupabaseRepository:
         ).data
         return _board_offer(rows[0]) if rows else None
 
-    def load_board(self, tenant_id: str, side: str, limit: int = 5000) -> list[BoardOffer]:
-        rows = (
-            self.client.table("offers")
+    def load_board(self, tenant_id: str, side: str, limit: int = _MAX_ROWS) -> list[BoardOffer]:
+        """Every live offer on one side.
+
+        Was a single request capped at 5,000 with no signal when it hit the cap. The
+        board already holds close to that, so it was one busy month from showing a
+        slice of itself and saying nothing.
+        """
+        rows = _all_rows(
+            lambda: self.client.table("offers")
             .select(_BOARD_COLUMNS)
             .eq("tenant_id", tenant_id)
             .eq("side", side)
-            .eq("status", "live")
-            .limit(limit)
-            .execute()
-        ).data
+            .eq("status", "live"),
+            cap=limit,
+        )
         return [_board_offer(row) for row in rows]
 
 
@@ -1032,6 +1055,33 @@ def _review_item(row: dict) -> ReviewItem:
         body_preview=body[:400],
         attachment_count=len(row.get("attachments") or []),
     )
+
+
+def _all_rows(build, page: int = _PAGE, cap: int = _MAX_ROWS) -> list[dict]:
+    """Every row a query matches, fetched a page at a time.
+
+    `build` is a callable rather than a query, because a PostgREST query object cannot
+    be re-executed with a different range — it has to be constructed again per page.
+    """
+    out: list[dict] = []
+    start = 0
+
+    while True:
+        rows = (build().range(start, start + page - 1).execute()).data or []
+        out.extend(rows)
+
+        if len(rows) < page:
+            return out
+
+        if len(out) >= cap:
+            log.error(
+                "query stopped at %d rows, the safety cap — results are incomplete and "
+                "anything derived from them is wrong",
+                len(out),
+            )
+            return out
+
+        start += page
 
 
 def _chunked(items: list[dict], size: int):
