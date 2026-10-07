@@ -1,0 +1,141 @@
+{
+  "name": "TVD — collector inbox to board",
+  "settings": {
+    "executionOrder": "v1",
+    "saveManualExecutions": true,
+    "errorWorkflow": ""
+  },
+  "nodes": [
+    {
+      "id": "trigger",
+      "name": "Watch the collector mailbox",
+      "type": "n8n-nodes-base.emailReadImap",
+      "typeVersion": 2,
+      "position": [
+        -300,
+        0
+      ],
+      "notes": "IMAP with an app password, not the Gmail OAuth trigger.\n\ngmail.readonly is a RESTRICTED scope: an External OAuth app needs Google verification plus an annual third-party CASA security assessment, and an app left in Testing mode expires its refresh token every 7 days. One app password on one collector mailbox avoids all of it.\n\nformat=resolved is required. The simple form drops attachments and the Message-ID, and Message-ID is what /ingest deduplicates on -- which matters here because five mailboxes forward into this one, so the same supplier email genuinely does arrive twice.",
+      "alwaysOutputData": false,
+      "parameters": {
+        "mailbox": "INBOX",
+        "postProcessAction": "read",
+        "format": "resolved",
+        "downloadAttachments": true,
+        "options": {
+          "customEmailConfig": "[\"UNSEEN\"]",
+          "forceReconnect": 60
+        }
+      },
+      "credentials": {
+        "imap": {
+          "id": "REPLACE_ME",
+          "name": "Collector mailbox (IMAP)"
+        }
+      }
+    },
+    {
+      "id": "build",
+      "name": "Build the payload",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -20,
+        0
+      ],
+      "notes": "Everything n8n decides is here, in one readable place, rather than spread across a dozen nodes nobody can diff.\n\nNote what is NOT here any more: spreadsheet conversion. The backend now accepts content_base64 and reads workbooks with read_spreadsheet, the same function the sample corpus uses. The old Extract-From-File node also had a real bug -- it pooled every sheet row in the execution, so two emails arriving in one poll each received the other's rows.",
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "// ---------------------------------------------------------------------------\n// One IMAP message -> the shape /ingest accepts.\n//\n// This file is plumbing. It does not decide whether an email is an offer or a\n// request, who sent it, what a row means, or what anything costs. All of that\n// is Python, where it is covered by tests. If you find yourself adding a rule\n// about the trade here, it belongs on the other side of the wire.\n// ---------------------------------------------------------------------------\n\nconst TENANT_ID = $env.TVD_TENANT_ID;\nif (!TENANT_ID) {\n  // Better to stop than to file a morning's mail against nothing. A missing\n  // tenant makes /ingest answer 'unknown_tenant' for every message, and the\n  // execution list fills with green ticks that moved no stock.\n  throw new Error('TVD_TENANT_ID is not set on this n8n instance');\n}\n\n// Workbooks are sent whole and read on the backend by read_spreadsheet, the\n// same function the sample corpus goes through. Everything else -- signature\n// logos, PDFs, inline images -- is recorded by name only. Base64 inflates a\n// file by a third, and a 2MB logo on every email is 2MB of nothing.\nconst WORKBOOK = /\\.(xlsx|xlsm|xls)$/i;\n\n// Reply quoting only. NOT forwarded messages: the client's entire workflow is\n// forwarding a supplier's email to a collector mailbox, so the payload sits\n// below 'Begin forwarded message' and cutting there would delete the email.\n// The backend strips again and refuses any cut that removes more prices than\n// it keeps, so this being imperfect is survivable.\nconst REPLY = [\n  /^\\s*(?:On|Am|Le|Il|El)\\b[^\\n]{0,160}\\b(?:wrote|schrieb|a écrit|ha scritto):\\s*$/im,\n  /^\\s*-{2,}\\s*Original Message\\s*-{2,}/im,\n  /^>[^\\n]*\\n>[^\\n]*\\n>/m,\n];\nconst FORWARD = /-{2,}\\s*Forwarded message\\s*-{2,}|Begin forwarded message/i;\n\nfunction stripQuoted(body) {\n  if (!body) return '';\n  let cut = null;\n  for (const pattern of REPLY) {\n    const found = body.match(pattern);\n    if (found && (cut === null || found.index < cut)) cut = found.index;\n  }\n  if (cut === null) return body;\n  if (FORWARD.test(body.slice(cut))) return body;   // the forward is the point\n  return body.slice(0, cut).trimEnd();\n}\n\nfunction address(raw) {\n  const found = String(raw || '').match(/[\\w.+-]+@[\\w-]+\\.[\\w.-]+/);\n  return found ? found[0].toLowerCase() : '';\n}\n\n// The IMAP node's 'resolved' format hands back mailparser's output, whose shape\n// has moved between versions: `from` is sometimes a string, sometimes\n// {value:[{address,name}]}, and headers are sometimes a Map and sometimes a\n// plain object. Read defensively rather than pick one and have the inbox go\n// quiet after an n8n upgrade.\nfunction headerOf(message, name) {\n  const lower = name.toLowerCase();\n  const headers = message.headers || {};\n\n  if (typeof headers.get === 'function') {\n    const viaMap = headers.get(lower);\n    if (viaMap) return typeof viaMap === 'string' ? viaMap : JSON.stringify(viaMap);\n  }\n  for (const key of Object.keys(headers)) {\n    if (key.toLowerCase() === lower) {\n      const value = headers[key];\n      return typeof value === 'string' ? value : JSON.stringify(value);\n    }\n  }\n  return '';\n}\n\nfunction fromField(message) {\n  const raw = message.from;\n  if (!raw) return { email: '', name: '' };\n  if (typeof raw === 'string') {\n    return { email: address(raw), name: raw.split('<')[0].replace(/\"/g, '').trim() };\n  }\n  const first = (raw.value || [])[0] || {};\n  return {\n    email: String(first.address || address(raw.text) || '').toLowerCase(),\n    name: String(first.name || '').trim(),\n  };\n}\n\nfunction recipients(message) {\n  const raw = message.to;\n  if (!raw) return [];\n  if (typeof raw === 'string') return [address(raw)].filter(Boolean);\n  return (raw.value || []).map((v) => String(v.address || '').toLowerCase()).filter(Boolean);\n}\n\nconst out = [];\nconst items = $input.all();\n\nfor (let index = 0; index < items.length; index += 1) {\n  const item = items[index];\n  const message = item.json;\n\n  const text = message.textPlain || message.text || '';\n  const html = message.textHtml || message.html || '';\n\n  // Message-ID is what /ingest deduplicates on, and with five mailboxes\n  // forwarding into one collector the same supplier email genuinely does\n  // arrive twice. Gmail auto-forward and Outlook Redirect both preserve it.\n  // The fallback is last-resort only: without something stable a redelivery\n  // reconciles a second time and every row missing from the second copy is\n  // closed as sold.\n  const messageId =\n    message.messageId ||\n    headerOf(message, 'message-id') ||\n    `<imap-${message.uid || index}-${Date.parse(message.date) || Date.now()}@tvd.local>`;\n\n  const attachments = [];\n  const binaries = item.binary || {};\n\n  for (const key of Object.keys(binaries)) {\n    const file = binaries[key];\n    const filename = file.fileName || key;\n    const record = {\n      filename,\n      mime_type: file.mimeType || '',\n      kind: 'other',\n      content_base64: null,\n    };\n\n    if (WORKBOOK.test(filename)) {\n      // getBinaryDataBuffer rather than file.data: in filesystem binary mode\n      // `.data` is an id, not the bytes, and reading it directly ships the\n      // string 'filesystem-v2:...' to the backend as though it were a\n      // spreadsheet. The helper works in both modes.\n      let buffer = null;\n      try {\n        buffer = await this.helpers.getBinaryDataBuffer(index, key);\n      } catch (error) {\n        buffer = file.data ? Buffer.from(file.data, 'base64') : null;\n      }\n      if (buffer) record.content_base64 = buffer.toString('base64');\n    }\n\n    attachments.push(record);\n  }\n\n  const sender = fromField(message);\n\n  out.push({\n    json: {\n      tenant_id: TENANT_ID,\n      message_id: messageId,\n      in_reply_to: message.inReplyTo || headerOf(message, 'in-reply-to') || null,\n      thread_id: null,\n      direction: 'inbound',\n\n      // The ORIGINAL sender, not the colleague who forwarded it -- Gmail\n      // auto-forward and Outlook Redirect both leave From: untouched. When a\n      // staff member forwards by hand instead, this is their address and the\n      // backend falls through to reading the forwarded header block. That\n      // fallback only works if the tenant's internal_domains lists the\n      // client's own domain; leave it empty and every forwarded offer is filed\n      // against the forwarder.\n      from_email: sender.email,\n      from_name: sender.name,\n      to: recipients(message),\n      subject: message.subject || '',\n      received_at: new Date(message.date || Date.now()).toISOString(),\n\n      // What gets parsed.\n      body_text: stripQuoted(text || html.replace(/<[^>]+>/g, ' ')),\n      // The complete original, for the source drawer. Never parsed, so it\n      // keeps its markup -- that is what table extraction reads.\n      body_raw: html || text,\n\n      attachments,\n    },\n  });\n}\n\nreturn out;\n"
+      }
+    },
+    {
+      "id": "post",
+      "name": "POST /ingest",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        240,
+        0
+      ],
+      "notes": "Retries on 5xx because the pipeline returns 500 for an unexpected failure and those are usually transient. It does NOT retry a 4xx: a malformed payload will be just as malformed the third time.\n\nA retry that actually succeeded the first time is harmless -- the backend deduplicates on message_id.",
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 5000,
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.TVD_BACKEND_URL }}/ingest",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "X-Ingest-Token",
+              "value": "={{ $env.TVD_INGEST_TOKEN }}"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($json) }}",
+        "options": {
+          "timeout": 120000,
+          "response": {
+            "response": {
+              "neverError": false
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "log",
+      "name": "Log the outcome",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        500,
+        0
+      ],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "// The backend replies with what it did -- 'processed as sell: 219 rows, 219\n// inserted'. Surfacing it means a morning's execution list reads at a glance,\n// instead of thirty identical green ticks that say nothing about whether any\n// stock actually arrived.\nfor (const item of $input.all()) {\n  const body = item.json || {};\n  console.log(`${body.message_id || '(no id)'} -> ${body.detail || '(no detail)'}`);\n}\nreturn $input.all();\n"
+      }
+    }
+  ],
+  "connections": {
+    "Watch the collector mailbox": {
+      "main": [
+        [
+          {
+            "node": "Build the payload",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build the payload": {
+      "main": [
+        [
+          {
+            "node": "POST /ingest",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "POST /ingest": {
+      "main": [
+        [
+          {
+            "node": "Log the outcome",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "pinData": {}
+}
