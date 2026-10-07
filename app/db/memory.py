@@ -39,8 +39,28 @@ class StoredOffer:
     status: str = "live"
     close_reason: str | None = None
     needs_review: bool = False
+    # Which email put this row here. The real table has it, and without it there is no
+    # way to undo one import -- rejecting a bad parse is 'withdraw what this email
+    # added', and nothing else identifies that set.
+    source_email_id: str | None = None
+    source_ref: str | None = None
+    confidence: float | None = None
+    review_reason: str | None = None
     first_seen_at: datetime = field(default_factory=datetime.utcnow)
     last_confirmed_at: datetime = field(default_factory=datetime.utcnow)
+
+
+@dataclass
+class StoredImport:
+    """An import with the two things ImportRecord has no room for: an id, and whether
+    a person has passed judgement on it yet."""
+
+    id: str
+    record: ImportRecord
+    created_at: datetime = field(default_factory=datetime.utcnow)
+    approved_at: datetime | None = None
+    rejected_at: datetime | None = None
+    reviewed_by: str | None = None
 
 
 @dataclass
@@ -61,7 +81,7 @@ class InMemoryRepository:
         self.seen_message_ids: set[tuple[str, str]] = set()
         self.offers: dict[str, StoredOffer] = {}
         self.changes: list[ChangeLogEntry] = []
-        self.imports: list[ImportRecord] = []
+        self.imports: list[StoredImport] = []
         self.usage: list[UsageEvent] = []
         self._ids = count(1)
 
@@ -121,7 +141,8 @@ class InMemoryRepository:
         ]
 
     def previous_row_count(self, tenant_id: str, counterparty_id: str) -> int | None:
-        for record in reversed(self.imports):
+        for stored in reversed(self.imports):
+            record = stored.record
             if (
                 record.tenant_id == tenant_id
                 and record.counterparty_id == counterparty_id
@@ -156,6 +177,11 @@ class InMemoryRepository:
                     quantity=incoming.quantity,
                     unit_price=incoming.unit_price,
                     currency=incoming.currency,
+                    source_email_id=email_id,
+                    source_ref=incoming.source_ref,
+                    needs_review=bool(incoming.fields.get("needs_review")),
+                    review_reason=incoming.fields.get("review_reason"),
+                    confidence=incoming.fields.get("confidence"),
                     first_seen_at=now,
                     last_confirmed_at=now,
                 )
@@ -208,8 +234,12 @@ class InMemoryRepository:
                 offer.last_confirmed_at = now
 
     def record_import(self, record: ImportRecord) -> str:
-        self.imports.append(record)
-        return self._next("import")
+        # The id is generated before storing, not after. Returning an id that was never
+        # attached to anything made every import unaddressable -- approve and reject had
+        # nothing to act on.
+        import_id = self._next("import")
+        self.imports.append(StoredImport(id=import_id, record=record))
+        return import_id
 
     def record_usage(self, events: list[UsageEvent]) -> None:
         self.usage.extend(events)
@@ -246,6 +276,165 @@ class InMemoryRepository:
     _SUPPLIER_SETTABLE = frozenset(
         {"default_currency", "decimal_separator", "staleness_hours", "typical_row_count", "name"}
     )
+
+    # ---------------------------------------------------------------- list review
+
+    def list_pending_imports(self, tenant_id: str, limit: int = 50) -> list[dict]:
+        """Shaped exactly like the Supabase join, so the API code is exercised the same.
+
+        That matters more than it looks: the endpoint reads `counterparties(name)` and
+        `emails(subject)` as nested objects, and a flat test double would let a real
+        KeyError through every test.
+        """
+        out: list[dict] = []
+        for stored in reversed(self.imports):
+            record = stored.record
+            if record.tenant_id != tenant_id:
+                continue
+            if stored.approved_at or stored.rejected_at:
+                continue
+
+            counterparty = self.counterparties.get(record.counterparty_id or "")
+            email = self.emails.get(record.email_id or "")
+
+            out.append(
+                {
+                    "id": stored.id,
+                    "created_at": stored.created_at.isoformat(),
+                    "row_count": record.row_count,
+                    "flagged_rows": record.flagged_rows,
+                    "parse_warnings": list(record.parse_warnings),
+                    "status": record.status,
+                    "is_complete_list": record.is_complete_list,
+                    "previous_row_count": record.previous_row_count,
+                    "offers_inserted": record.offers_inserted,
+                    "offers_updated": record.offers_updated,
+                    "offers_closed": record.offers_closed,
+                    "notes": record.notes,
+                    "counterparty_id": record.counterparty_id,
+                    "email_id": record.email_id,
+                    "counterparties": (
+                        {"name": counterparty.name, "primary_email": counterparty.primary_email}
+                        if counterparty
+                        else None
+                    ),
+                    "emails": (
+                        {
+                            "subject": email.subject,
+                            "received_at": email.received_at.isoformat(),
+                            "attachments": email.attachments,
+                        }
+                        if email
+                        else None
+                    ),
+                }
+            )
+            if len(out) >= limit:
+                break
+        return out
+
+    def _find_import(self, tenant_id: str, import_id: str):
+        for stored in self.imports:
+            if stored.id == import_id and stored.record.tenant_id == tenant_id:
+                return stored
+        return None
+
+    def approve_import(self, tenant_id: str, import_id: str, user_id: str | None) -> bool:
+        stored = self._find_import(tenant_id, import_id)
+        if stored is None:
+            return False
+        stored.approved_at = datetime.utcnow()
+        stored.reviewed_by = user_id
+        # Deliberately leaves needs_review alone on the flagged rows. Approving the list
+        # is not approving the twelve rows nobody has looked at.
+        return True
+
+    def reject_import(self, tenant_id: str, import_id: str, user_id: str | None) -> dict:
+        stored = self._find_import(tenant_id, import_id)
+        if stored is None:
+            return {"rejected": False}
+
+        email_id = stored.record.email_id
+        now = datetime.utcnow()
+
+        withdrawn = 0
+        for offer in self.offers.values():
+            if offer.tenant_id == tenant_id and offer.source_email_id == email_id:
+                if offer.status != "withdrawn":
+                    offer.status = "withdrawn"
+                    offer.close_reason = "import rejected"
+                    withdrawn += 1
+
+        # The half that is easy to forget. This import closed the supplier's previous
+        # list as sold; leaving it closed means a rejected bad parse still destroyed
+        # real stock. The change log is what makes putting it back possible.
+        reopened = 0
+        closed_by_this = {
+            entry.offer_id
+            for entry in self.changes
+            if entry.field == "status" and entry.new == "sold" and entry.email_id == email_id
+        }
+        for offer_id in closed_by_this:
+            offer = self.offers.get(offer_id)
+            if offer is not None and offer.tenant_id == tenant_id and offer.status == "sold":
+                offer.status = "live"
+                offer.close_reason = None
+                reopened += 1
+
+        stored.rejected_at = now
+        stored.reviewed_by = user_id
+        # ImportRecord is frozen — replaced rather than mutated. Worth keeping frozen:
+        # an import is a record of what happened, and a record that can be edited in
+        # place is not an audit trail.
+        stored.record = replace(stored.record, status="failed")
+
+        return {"rejected": True, "withdrawn": withdrawn, "reopened": reopened}
+
+    def list_flagged_rows(self, tenant_id: str, import_id: str | None = None) -> list[dict]:
+        email_id = None
+        if import_id:
+            stored = self._find_import(tenant_id, import_id)
+            if stored is None:
+                return []
+            email_id = stored.record.email_id
+
+        out = []
+        for offer in self.offers.values():
+            if offer.tenant_id != tenant_id or not offer.needs_review:
+                continue
+            if email_id is not None and offer.source_email_id != email_id:
+                continue
+            counterparty = self.counterparties.get(offer.counterparty_id)
+            out.append(
+                {
+                    "id": offer.id,
+                    "side": offer.side,
+                    "description": offer.description,
+                    "quantity": offer.quantity,
+                    "unit_price": offer.unit_price,
+                    "currency": offer.currency,
+                    "confidence": offer.confidence,
+                    "review_reason": offer.review_reason,
+                    "source_ref": offer.source_ref,
+                    "source_email_id": offer.source_email_id,
+                    "counterparties": {"name": counterparty.name} if counterparty else None,
+                }
+            )
+        return out
+
+    def resolve_row(self, tenant_id: str, offer_id: str, changes: dict) -> bool:
+        offer = self.offers.get(offer_id)
+        if offer is None or offer.tenant_id != tenant_id:
+            return False
+
+        for name in ("description", "quantity", "unit_price", "currency"):
+            if changes.get(name) is not None:
+                setattr(offer, name, changes[name])
+
+        offer.needs_review = False
+        offer.review_reason = None
+        offer.confidence = 1.0
+        return True
 
     def list_suppliers(self, tenant_id: str) -> list[SupplierSummary]:
         out = []

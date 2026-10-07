@@ -221,7 +221,11 @@ def test_european_prices_use_the_suppliers_setting(repo):
 def test_import_is_recorded_for_the_audit_trail(repo):
     process_email(email(), repo)
 
-    record = repo.imports[0]
+    stored = repo.imports[0]
+    # .record, because a stored import now also carries the id and review state the
+    # real table has — an import with no id cannot be approved or rejected.
+    assert stored.id
+    record = stored.record
     assert record.row_count == 3
     assert record.offers_inserted == 3
     assert record.status == "applied"

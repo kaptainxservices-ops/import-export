@@ -21,8 +21,14 @@ from app.dependencies import get_repository
 log = logging.getLogger(__name__)
 
 
-def current_tenant(authorization: str = Header(default="")) -> tuple[str, Repository]:
-    """Resolve the caller's tenant from their Supabase session token.
+def current_caller(authorization: str = Header(default="")) -> tuple[str, str, Repository]:
+    """Resolve the caller's tenant *and* their user id from their session token.
+
+    Same check as `current_tenant`, which delegates here. Separate because most
+    endpoints have no business knowing who is asking — only which board they may read —
+    while the review actions record a person against the decision. `reviewed_by` on an
+    import is the difference between "this list was approved" and "Chandan approved this
+    list at 09:14", and only the second is any use when a supplier disputes a price.
 
     The repository is fetched *after* the token check rather than injected. An
     unauthenticated request should not cause a database client to be constructed — that
@@ -51,4 +57,10 @@ def current_tenant(authorization: str = Header(default="")) -> tuple[str, Reposi
     if not tenant_id:
         raise HTTPException(status.HTTP_403_FORBIDDEN, "no tenant for this user")
 
+    return tenant_id, user_id, repository
+
+
+def current_tenant(authorization: str = Header(default="")) -> tuple[str, Repository]:
+    """The caller's tenant and a repository, for endpoints that need nothing else."""
+    tenant_id, _user_id, repository = current_caller(authorization)
     return tenant_id, repository

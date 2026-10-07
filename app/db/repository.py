@@ -111,6 +111,46 @@ class Repository(Protocol):
         """Emails the pipeline declined to file, newest first."""
         ...
 
+    def list_pending_imports(self, tenant_id: str, limit: int = 50) -> list[dict]:
+        """Price lists nobody has approved or rejected yet, newest first.
+
+        Rows rather than a model: the shape is a join across imports, counterparties
+        and emails, and inventing a dataclass for it would be a third place to update
+        when a column is added. The API turns them into its own response model.
+        """
+        ...
+
+    def approve_import(self, tenant_id: str, import_id: str, user_id: str | None) -> bool:
+        """Accept the list as read. False when no such import is on this tenant.
+
+        Must NOT clear `needs_review` on the flagged rows: "approve 475" and "review
+        the 12" are two decisions, and collapsing them lets one click push twelve
+        doubtful rows onto the board.
+        """
+        ...
+
+    def reject_import(self, tenant_id: str, import_id: str, user_id: str | None) -> dict:
+        """Undo a list wholesale. `{rejected, withdrawn, reopened}`.
+
+        Both halves are required. Withdrawing the rows it added is obvious; putting
+        back the rows it closed as sold is the half that is easy to forget, and without
+        it a rejected bad parse still destroys the stock it displaced.
+        """
+        ...
+
+    def list_flagged_rows(self, tenant_id: str, import_id: str | None = None) -> list[dict]:
+        """Rows held out of the live board for a person, newest first."""
+        ...
+
+    def resolve_row(self, tenant_id: str, offer_id: str, changes: dict) -> bool:
+        """Apply a correction and let the row onto the board.
+
+        Clears `needs_review` as part of the same write. A correction that left the row
+        flagged would be offered again tomorrow, and a person who fixes the same row
+        twice stops trusting the queue.
+        """
+        ...
+
     # ---------------------------------------------------------------- deals
 
     def list_deals(self, tenant_id: str, include_closed: bool = False) -> list[Deal]:
