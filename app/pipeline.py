@@ -15,6 +15,8 @@ the entire pipeline is exercised in tests against an in-memory store.
 
 from __future__ import annotations
 
+import base64
+import binascii
 import logging
 import re
 from dataclasses import dataclass, field
@@ -27,7 +29,7 @@ from app.brain.normalise import detect_declared_currency, expand_variants, parse
 from app.brain.quoting import strip_quoted_history
 from app.brain.reconcile import IncomingOffer, ReconcileResult, reconcile
 from app.brain.sender import resolve_sender
-from app.brain.tables import ColumnMapper, parse_grid, read_html_tables
+from app.brain.tables import ColumnMapper, parse_grid, read_html_tables, read_spreadsheet
 from app.db.models import EmailRecord, ImportRecord, UsageEvent
 from app.db.repository import Repository
 from app.schemas.email import Attachment, InboundEmail
@@ -57,11 +59,109 @@ class PipelineResult:
         return self.outcome == "processed"
 
 
+# A workbook larger than this is not a price list, it is a mistake — a photo archive, a
+# whole year of exports, somebody's accounts. Decoding it would hold tens of megabytes
+# in memory per concurrent request for nothing.
+MAX_ATTACHMENT_BYTES = 25 * 1024 * 1024
+
+_WORKBOOK_SUFFIXES = (".xlsx", ".xlsm", ".xls")
+
+
+def materialise_attachments(attachments: list[Attachment]) -> list[Attachment]:
+    """Turn raw workbook bytes into rows, before anything else looks at them.
+
+    The sender may hand over a spreadsheet as `content_base64` rather than converting
+    it. For n8n that is the better shape by some distance: converting it there means a
+    second implementation of `read_spreadsheet` written in JavaScript inside a Code
+    node, untested, maintained by hand, and free to drift from this one.
+
+    Done here, at the very top of the pipeline, rather than down in `extract_rows`, for
+    two reasons that are easy to get wrong:
+
+    *The rows are what gets stored.* `save_email` persists the attachment list, and
+    `reprocess_email` rebuilds the payload from it after a human names the sender. If
+    conversion happened later, a reprocess would need the original file kept somewhere.
+
+    *The base64 must never reach the database.* A 10MB workbook stored on the email row
+    would add more bytes than every offer it produced, on every email, forever.
+
+    One attachment may become several. A workbook with four sheets is four grids, and
+    taking only the first silently discards three quarters of some suppliers' lists.
+    An attachment that cannot be read is kept, without rows, rather than dropped: a
+    record that something arrived and could not be parsed is worth more than silence.
+    """
+    out: list[Attachment] = []
+
+    for attachment in attachments:
+        if not attachment.content_base64:
+            out.append(attachment)
+            continue
+
+        # Stripped first and unconditionally, so that every path below — including each
+        # way of failing — yields an attachment with no payload left on it.
+        stripped = attachment.model_copy(update={"content_base64": None})
+
+        # Rows already present win. The sender did the conversion and also sent the
+        # file; re-reading it could only disagree with what we were told.
+        if attachment.rows:
+            out.append(stripped)
+            continue
+
+        if not attachment.filename.lower().endswith(_WORKBOOK_SUFFIXES):
+            # PDFs, images, signatures. Nothing here can read them; the row stands as a
+            # note that the email carried one.
+            out.append(stripped)
+            continue
+
+        try:
+            data = base64.b64decode(attachment.content_base64, validate=True)
+        except (binascii.Error, ValueError):
+            log.warning("attachment %s: content_base64 is not valid base64", attachment.filename)
+            out.append(stripped)
+            continue
+
+        if len(data) > MAX_ATTACHMENT_BYTES:
+            log.warning(
+                "attachment %s: %d bytes exceeds the %d byte limit; not read",
+                attachment.filename, len(data), MAX_ATTACHMENT_BYTES,
+            )
+            out.append(stripped)
+            continue
+
+        # read_spreadsheet reports an unreadable file as an empty list rather than
+        # raising, so one corrupt workbook cannot abandon the rest of the email.
+        grids = read_spreadsheet(data, attachment.filename)
+        if not grids:
+            log.warning("attachment %s: no readable sheets", attachment.filename)
+            out.append(stripped)
+            continue
+
+        out.extend(
+            stripped.model_copy(
+                update={
+                    "kind": "table",
+                    "rows": grid.rows,
+                    "filename": grid.source or attachment.filename,
+                }
+            )
+            for grid in grids
+        )
+
+    return out
+
+
 def process_email(payload: InboundEmail, repo: Repository) -> PipelineResult:
     """Run one inbound email through the whole brain and persist the result."""
     tenant = repo.get_tenant(payload.tenant_id)
     if tenant is None:
         return PipelineResult("unknown_tenant", payload.message_id, notes=["no such tenant"])
+
+    # Before the dedupe check and before anything is stored, so that what gets written
+    # to the email row is parsed rows rather than a base64 blob of the original file.
+    if any(a.content_base64 for a in payload.attachments):
+        payload = payload.model_copy(
+            update={"attachments": materialise_attachments(payload.attachments)}
+        )
 
     # Retries and mailbox re-syncs redeliver the same message. Reconciling twice is not
     # merely wasteful — the second pass sees the offers it just created as already live,

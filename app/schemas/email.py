@@ -19,6 +19,11 @@ class Attachment(BaseModel):
     `kind="table"` means rows were extracted cleanly and the deterministic parser can
     handle it — no per-row LLM call, which is where most of the cost saving lives.
     `kind="image"` means a screenshot that only the model can read.
+
+    A sender that cannot read a workbook itself may send `content_base64` instead and
+    let this side convert it. That is the preferred shape for n8n: converting a
+    spreadsheet in a Code node means a second, untested implementation of
+    `read_spreadsheet` written in JavaScript, and the two drift.
     """
 
     model_config = ConfigDict(extra="ignore")
@@ -32,6 +37,15 @@ class Attachment(BaseModel):
         default=None, description="Sheet rows including the header row, for kind='table'"
     )
     image_base64: str | None = Field(default=None, description="Set for kind='image'")
+
+    content_base64: str | None = Field(
+        default=None,
+        description=(
+            "The original file, base64-encoded, for a workbook the sender could not "
+            "convert. Converted to `rows` on arrival and then discarded -- it is never "
+            "stored and never reaches the parser directly."
+        ),
+    )
 
 
 class InboundEmail(BaseModel):

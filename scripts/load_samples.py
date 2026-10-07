@@ -91,12 +91,17 @@ def _received_at(raw: str | None):
 
 
 def _spreadsheet(filename: str, payload: bytes) -> Attachment:
-    """Convert a workbook to rows here, mirroring what n8n will send."""
-    from app.brain.tables import read_spreadsheet
+    """Hand the workbook over as bytes, mirroring what n8n sends.
 
-    grids = read_spreadsheet(payload, filename)
-    rows = grids[0].rows if grids else None
-    return Attachment(filename=filename, kind="table" if rows else "other", rows=rows)
+    This used to convert the file here and pass `rows`, which quietly took only the
+    first sheet — a four-sheet list arrived as a quarter of itself. More to the point,
+    converting here meant the sample corpus exercised a different code path from
+    production. The pipeline's own `materialise_attachments` now does the reading, so
+    the loader and the live inbox go through exactly the same conversion.
+    """
+    import base64
+
+    return Attachment(filename=filename, content_base64=base64.b64encode(payload).decode())
 
 
 def _address(raw: str | None) -> str:
