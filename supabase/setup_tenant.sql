@@ -41,8 +41,15 @@ declare
     -- mailbox itself, which relays everything and would otherwise look like the
     -- busiest supplier of all.
     own_domains   text[] := array['tvdservices.com'];
+    --
+    -- hotmail.com and outlook.com are listed ADDRESS BY ADDRESS, never as domains.
+    -- Real counterparties use them too -- murri1976@hotmail.com is a supplier, not a
+    -- colleague -- and adding the domain would hide every one of them.
     own_addresses text[] := array[
-        'tvdlogistics@outlook.com'
+        'tvdlogistics@outlook.com',
+        -- Found by auditing the board, not supplied by the client: 98 offers were
+        -- filed against it. Nobody mentioned this mailbox existed.
+        'tvdservices@hotmail.com'
         -- , '<the collector mailbox>'   -- add once it exists
         -- , '<the fifth staff address>' -- still outstanding from the client
     ];
