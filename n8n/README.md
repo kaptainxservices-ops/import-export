@@ -54,6 +54,32 @@ message is filed against the staff member who forwarded it. On the first load th
 largest supplier. The collector mailbox relays *everything*, so leaving it off the list
 makes it look like the busiest supplier of all.
 
+## The privacy gate
+
+The workflow decides whether an email is trade mail at all, and drops it if not. That
+decision is in the **Is this trade mail?** node, and it has to be there rather than on
+the backend.
+
+The pipeline stores an email *before* it classifies it — `save_email` runs, then the
+classifier concludes it is not an offer. So a bank statement "rejected" by the backend
+is a bank statement stored in full, sitting in a review queue for someone to open.
+Dropping it in n8n means it never reaches the database.
+
+The test is deliberately loose. It keeps anything with a spreadsheet attached, trade
+wording in the subject (`WTS`, `WTB`, `offer`, `stock`, `price`, `Angebot`, `oferta`…),
+or prices quoted against product names in the body. Everything else is dropped, and the
+false branch goes nowhere on purpose — the email stays in the collector, unread by
+anything, and the execution log records what was dropped and why.
+
+Loose in that direction because the two mistakes are not equal. A price list this drops
+is invisible: nobody knows to look for an email that never arrived. Junk that gets
+through costs one row and one model call, and the backend's classifier is the second
+gate and much better at the judgement.
+
+**This is not the only place to filter.** A rule on each staff mailbox, so private mail
+never leaves it at all, is stronger — see `docs/collector-mailbox.md`. The two compose:
+narrow at the source, precise here.
+
 ## What n8n does, and what it deliberately does not
 
 n8n's job is **delivery**. It fetches a message and POSTs it to `/ingest`. Every decision
