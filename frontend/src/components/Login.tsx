@@ -2,6 +2,21 @@ import { useState, type FormEvent } from "react";
 
 import { supabase } from "../lib/supabase";
 
+/**
+ * The shared demo login, when one is configured.
+ *
+ * Read from the environment rather than written into this file, for one reason: a
+ * password committed to a repository is public *forever*. It stays in the history long
+ * after the demo account is gone, and it will be read by somebody who was never told
+ * the account was temporary.
+ *
+ * Both variables must be present for the block to appear, so the client's own
+ * deployment hides it by simply not setting them. Turning the demo off is a settings
+ * change, not a code change and a redeploy of different code.
+ */
+const demoEmail = import.meta.env.VITE_DEMO_EMAIL;
+const demoPassword = import.meta.env.VITE_DEMO_PASSWORD;
+
 export function Login() {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
@@ -33,6 +48,14 @@ export function Login() {
       );
     }
     setBusy(false);
+  }
+
+  // Typing a password off a screen is where a demo goes wrong — one mistyped character
+  // and the reply is the deliberately unhelpful "those details were not accepted".
+  function useDemoAccount() {
+    setEmail(demoEmail ?? "");
+    setPassword(demoPassword ?? "");
+    setError(null);
   }
 
   return (
@@ -68,6 +91,28 @@ export function Login() {
         <button type="submit" disabled={busy}>
           {busy ? "Signing in…" : "Sign in"}
         </button>
+
+        {demoEmail && demoPassword && (
+          <div className="demo">
+            <p className="demo-title">Shared demo account</p>
+
+            <dl className="demo-creds">
+              <dt>Email</dt>
+              <dd>{demoEmail}</dd>
+              <dt>Password</dt>
+              <dd>{demoPassword}</dd>
+            </dl>
+
+            <button type="button" className="link" onClick={useDemoAccount}>
+              Fill these in
+            </button>
+
+            <p className="small muted">
+              Everyone testing shares this login, so anything changed here is changed
+              for everyone.
+            </p>
+          </div>
+        )}
       </form>
     </div>
   );
