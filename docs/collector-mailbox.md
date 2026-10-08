@@ -1,97 +1,152 @@
-# The collector mailbox
+# The collector mailboxes
 
-One mailbox that every staff address forwards into, and the only mailbox the system
-ever connects to.
+**One collector per staff member.** Each person's mail forwards into a mailbox that is
+theirs, and that mailbox is the only thing the system ever connects to.
+
+> **Changed from the first version of this document.** That one described a single
+> shared collector. It was wrong in a way worth recording: with one box, anybody who
+> can open it reads everybody's forwarded mail. Sales sees what Logistics received. The
+> whole point of letting staff see what is being collected is defeated by the thing
+> that lets them see it.
 
 ---
 
-## Why — the short version
+## Why forward at all
 
-**Because four of the five mailboxes cannot be read any other way, and the fifth would
-cost weeks of paperwork.**
-
----
-
-## Why — the long version
-
-The obvious design is to connect all five staff mailboxes directly. We looked at that
-properly before choosing. It does not work.
+**Because four of the five mailboxes cannot be read any other way.**
 
 ### Outlook is closed
 
 Microsoft **has already disabled** Basic authentication for IMAP and POP in every
 Exchange Online tenant. Not "is deprecating" — it is off, and
 [Microsoft's own documentation](https://learn.microsoft.com/en-us/exchange/clients-and-mobile-in-exchange-online/deprecation-of-basic-authentication-exchange-online)
-states that nobody, including Microsoft support, can switch it back on. App passwords
-stopped working at the same time. Consumer `@outlook.com` followed.
+says nobody, including Microsoft support, can switch it back on. App passwords stopped
+working at the same time. Consumer `@outlook.com` followed.
 
 So `tvdlogistics@outlook.com` cannot be read with a username and password at all. It
-would need a Microsoft Entra app registration, an OAuth consent flow, and someone
-maintaining refresh tokens. And because it is a *personal* Outlook account rather than a
+would need a Microsoft Entra app registration, an OAuth consent flow, and somebody
+maintaining refresh tokens — and being a *personal* Outlook account rather than a
 mailbox inside a company tenant, it does not even qualify for the clean administrative
 routes that exist for business tenants.
 
 ### Gmail is expensive to automate
 
-`gmail.readonly` is what Google calls a **restricted scope**. To use it in production,
-an app must pass Google verification *and* an annual third-party CASA security
-assessment. That is weeks of work and real money.
-
-The alternative is leaving the app in "Testing" mode — where the refresh token expires
-**every 7 days**. That means re-authorising every mailbox, every week, forever.
+`gmail.readonly` is what Google calls a **restricted scope**. Using it in production
+needs Google verification *and* an annual third-party CASA security assessment — weeks
+of work and real money. The alternative is leaving the app in "Testing", where the
+refresh token expires **every 7 days**: re-authorising every mailbox, every week,
+forever.
 
 ### What that adds up to
 
-| Direct connection | Collector mailbox |
+| Reading the mailboxes directly | Forwarding to collectors |
 |---|---|
-| 5 mailboxes | 1 mailbox |
-| 2 providers | 1 provider |
-| 2 app registrations | 0 |
+| 2 providers, 2 app registrations | none |
 | Google verification + CASA | none |
-| Tokens to maintain forever | one app password that does not expire |
+| Tokens to maintain forever | app passwords, which do not expire |
 | Weeks | an afternoon |
 
-### It also happens to be what the client already does
+### And it is already how they work
 
-The staff already forward supplier emails around by hand. We are not introducing a new
-habit — we are pointing an existing one at a mailbox that does something useful with it.
+The staff forward supplier emails around by hand today. We are not introducing a habit,
+we are pointing an existing one somewhere useful. The system already reads forwarded
+mail correctly: on the real corpus, **30 of 45 emails** resolve to the genuine supplier
+through the forwarded-header path.
 
-And the system already reads forwarded mail correctly. `resolve_sender` has a dedicated
-path that opens the forwarded header block and pulls out the original supplier. On the
-real corpus, **30 of 45 emails** resolve to the genuine supplier that way.
+---
+
+## Why one each, rather than one shared
+
+Three reasons, in order of weight.
+
+**A shared box leaks between colleagues.** Give one person access and they can read
+everyone's forwarded mail. That is a privacy problem *inside* the client's own team,
+and it is the reason this document changed.
+
+**Transparency only works if they can look.** Under GDPR the staff must be informed
+about what is collected. A mailbox they own and can open at any time makes that
+structural rather than a promise in a policy nobody reads.
+
+**Revocation becomes clean.** One person objects, or leaves — their collector is
+switched off without touching anybody else's.
+
+It costs nothing in money. Five free Gmail accounts, and self-hosted n8n has no
+execution limit, so five IMAP triggers run on the same server as one. The cost is
+about two extra hours of setup.
+
+---
+
+## Why a collector can never be an Outlook account
+
+The collector is **the one mailbox the system has to read**, and reading means IMAP —
+which Microsoft has closed. So:
+
+- `tvdlogistics@outlook.com` as a **source**: fine. It only forwards.
+- An `@outlook.com` account as a **collector**: impossible. n8n cannot read it.
+
+Every collector must be Gmail, Google Workspace, or another provider that still issues
+app passwords (Zoho, Fastmail). Never Microsoft.
+
+**This is why Chandan's answer matters.** If `tvdservices.com` is on Google Workspace,
+the collectors can live on the client's own domain — company-owned, admin-controlled,
+data never leaving their domain, at the cost of extra Workspace seats. If it is on
+Microsoft 365, that option does not exist at all, because those mailboxes cannot be
+read by IMAP either, and the collectors have to be Gmail accounts instead.
 
 ---
 
 ## What you are building
 
 ```
-info@tvdservices.com      ─┐
-sales@tvdservices.com     ─┤
-sales1@tvdservices.com    ─┼──forward──▶  collector Gmail  ──IMAP──▶  n8n  ──▶  the board
-tvdlogistics@outlook.com  ─┤
-(the fifth address)       ─┘
+info@tvdservices.com      ──filter──▶  collector 1  ─┐
+sales@tvdservices.com     ──filter──▶  collector 2  ─┤
+sales1@tvdservices.com    ──filter──▶  collector 3  ─┼─IMAP─▶ n8n ─gate─▶ the board
+tvdlogistics@outlook.com  ──filter──▶  collector 4  ─┤
+tvdservices@hotmail.com   ──filter──▶  collector 5  ─┘
 ```
 
-Nobody reads the collector by hand. It exists so that software has exactly one door to
-knock on.
+Each staff member has access to their own collector and to nobody else's.
+
+Note the **two filters**. One at the source, so private mail never leaves the staff
+mailbox. One in n8n, so anything that slips through never reaches the database. They
+are not redundant — see below.
+
+---
+
+## Who owns the accounts
+
+**The client, not you.** These will hold a copy of every supplier price list TVD
+receives. Gmail accounts in your own name holding a client's commercial data is
+awkward on day one and much worse the day the contract ends.
+
+Have Samir or Chandan create them, and have them hand you the app passwords.
 
 ---
 
 ## Setup
 
-### Step 1 — Create the account
+Repeat steps 1–5 for each of the five staff members.
 
-A **new** Gmail account, not a personal one. Something obvious:
-`tvd.board.ingest@gmail.com`.
+### Step 1 — Create the collector
 
-It will hold a copy of every supplier price list the client receives, so it is a
-business asset. Put the password in a password manager, not in a chat.
+A new Gmail account named after the person it serves, so nobody has to guess which is
+which:
+
+```
+tvd.feed.info@gmail.com        for info@tvdservices.com
+tvd.feed.sales@gmail.com       for sales@tvdservices.com
+tvd.feed.sales1@gmail.com      for sales1@tvdservices.com
+tvd.feed.logistics@gmail.com   for tvdlogistics@outlook.com
+tvd.feed.hotmail@gmail.com     for tvdservices@hotmail.com
+```
+
+Give the staff member the password. It is their mailbox — that is the point.
 
 ### Step 2 — Turn on 2-Step Verification
 
 <https://myaccount.google.com/signinoptions/twosv>
 
-Google will not offer app passwords until this is on. There is no way round it.
+Google will not offer app passwords without it. There is no way round this.
 
 ### Step 3 — Turn on IMAP
 
@@ -101,109 +156,146 @@ Gmail → ⚙ → **See all settings** → **Forwarding and POP/IMAP** → **Ena
 
 <https://myaccount.google.com/apppasswords>
 
-Name it `n8n`. Google shows a **16-character** password once and never again. Copy it
-straight into a password manager.
+Name it `n8n`. Google shows a **16-character** password once and never again.
 
-This is the only mail credential the system ever holds. It is not the account password,
-it only grants mail access, and it can be revoked from that page without changing
-anything else.
+This is the only mail credential the system holds for that person. It is not the
+account password, it grants mail access only, and it can be revoked from that page
+without changing anything else.
 
-> **Send me the email address. Never send me the app password** — put it into n8n
+> **Send me the email addresses. Never send me the app passwords** — put them into n8n
 > yourself when we get there.
 
 ### Step 5 — Stop anything being marked spam
 
-This step is not optional and it is the one people skip.
+Not optional, and the step people skip.
 
-Forwarding breaks SPF — the email now arrives from a server that is not authorised to
-send for the supplier's domain — so forwarded supplier mail often lands in **Spam**. The
-IMAP connection only reads **INBOX**. Anything in Spam is invisible, silently, forever.
+Forwarding breaks SPF — the mail now arrives from a server not authorised to send for
+the supplier's domain — so forwarded supplier mail often lands in **Spam**. The IMAP
+connection reads **INBOX** only. Anything in Spam is invisible, silently, forever.
 
 Gmail → ⚙ → See all settings → **Filters and Blocked Addresses** → **Create a new
-filter**:
+filter** → From: the one staff address that forwards here → Continue → tick **Never
+send it to Spam** → Create filter.
 
-- **From:** `info@tvdservices.com OR sales@tvdservices.com OR sales1@tvdservices.com OR tvdlogistics@outlook.com OR tvdservices@hotmail.com`
-- Continue → tick **Never send it to Spam** → Create filter
+---
 
-### Step 6 — Forward the three `@tvdservices.com` mailboxes
+## Step 6 — Forward, with a filter
 
-Do this in each of `info@`, `sales@` and `sales1@`.
+This is where privacy is actually won, so it is worth doing properly.
 
-**If tvdservices.com is on Google Workspace:**
+**Do not forward everything.** Forward only what looks like trade mail, using a rule on
+the *staff member's own* mailbox. Private, HR and banking mail then never leaves it.
 
-⚙ → See all settings → **Forwarding and POP/IMAP** → **Add a forwarding address** → the
-collector address.
+Keep the rule deliberately loose:
 
-Google sends a confirmation code to the collector. Open the collector, click the link,
-then return to the source mailbox and select **Forward a copy of incoming mail to…**,
-leaving "keep Gmail's copy in the Inbox" selected so staff still see their own mail.
+> has an attachment
+> **OR** subject contains `WTS` `WTB` `offer` `stock` `price` `list` `RFQ` `quote`
+> **OR** the sender is a known supplier domain
 
-**If tvdservices.com is on Microsoft 365:**
+Loose in that direction because the two mistakes are not equal. A price list the filter
+drops is **invisible** — nobody knows to look for an email that never arrived. Junk that
+gets through costs one database row, and n8n's gate catches most of it anyway.
 
-Settings → Mail → **Rules** → Add new rule → condition **Apply to all messages** →
-action **Redirect to** → the collector address.
+**Gmail / Workspace source:** ⚙ → See all settings → **Filters and Blocked Addresses**
+→ create a filter matching the rule above → **Forward it to** the collector. Add the
+collector under **Forwarding and POP/IMAP** first; Google emails it a confirmation code
+that you must click.
 
-Use **Redirect to**, not "Forward to" — see the box below.
+**Microsoft 365 source:** Settings → Mail → **Rules** → Add new rule, with the same
+conditions, action **Redirect to**.
 
-> ⚠️ **An administrator can block forwarding to outside addresses**, on either platform.
-> If it is blocked, this whole plan stops and we go back to per-mailbox OAuth. Check
-> this before promising the client a date.
+> ⚠️ **An administrator can block forwarding to outside addresses**, on either
+> platform. If it is blocked this whole plan stops and we are back to per-mailbox
+> OAuth. Check before promising the client a date.
 
-### Step 7 — Redirect `tvdlogistics@outlook.com`
+### Step 7 — The Outlook mailboxes: forward or redirect?
 
-Outlook → ⚙ → **Mail** → **Rules** → **Add new rule**
+For `tvdlogistics@outlook.com` and `tvdservices@hotmail.com`:
 
-- Name: `Forward to board`
-- Condition: **Apply to all messages**
-- Action: **Redirect to** → the collector address
-- Save
+| | Keeps their own copy | Sender read at |
+|---|---|---|
+| **Redirect to** | likely **no** | 100% confidence |
+| **Forward to** | yes | 90% confidence |
 
-> **Redirect, not Forward.** Redirect passes the message through with the original
-> `From:` header untouched, so the system reads the real supplier straight off the
-> envelope at full confidence. "Forward" wraps the message in a new one from the staff
-> member, which drops it to the forwarded-header path at 90% confidence. Both work. One
-> is better and costs nothing.
+Redirect passes the message through with the original `From:` intact, which is better
+for us. But it generally does **not** leave a copy in the sender's own mailbox — and
+these are mailboxes somebody actually works in. A trader losing sight of their own
+inbox is not a trade worth making for ten percentage points of confidence.
 
-### Step 8 — Test each path
+**So use Forward on these two**, unless the person says they do not mind.
 
-Send a test email **from an outside address** (your personal Gmail) to each of the five
-mailboxes in turn. For each, check the collector and confirm:
+Microsoft's behaviour differs between consumer Outlook and Exchange, so do not take my
+word for it: set one rule, send a test, and look. That is what step 8 is for.
+
+### Step 8 — Test every path
+
+From an outside address (your personal Gmail), send a test to each of the five staff
+mailboxes in turn. For each one, open that person's collector and check:
 
 - [ ] it arrived in **INBOX**, not Spam
 - [ ] the **From** shows the outside address, not the staff member
+- [ ] the staff member still has their own copy
 - [ ] it arrived within a minute or so
 
-If the From shows the staff member instead, that mailbox is using Forward rather than
-Redirect. Fix it now — it is much harder to spot later.
+Then send one that should *not* pass the filter — "lunch tomorrow?" — and confirm it
+does **not** appear.
+
+---
+
+## The second filter, in n8n
+
+The workflow has an **Is this trade mail?** node between building the payload and
+posting it. Anything that fails never reaches the database.
+
+It has to be there rather than on the backend, and the reason is the order of
+operations: **the pipeline stores an email before it classifies it.** `save_email` runs,
+then the classifier concludes it is not an offer. So a bank statement "rejected" by the
+backend is a bank statement stored in full, sitting in a review queue for somebody to
+open. Rejected is not the same as never arrived.
+
+The two filters compose: broad at the source so private mail never leaves, precise in
+n8n so what does leave is still checked. Neither alone is enough.
+
+---
+
+## Retention
+
+`supabase/migrations/0011_retention.sql` ages out what is stored — the message body
+blanked after 90 days, the row deleted after 18 months once no offer or import still
+points at it. It is **not scheduled automatically**; the `pg_cron` lines are in the file
+ready to run once the client has agreed the windows.
+
+TVD Services B.V. is in Rotterdam and TVD Services (UK) Ltd in Reading, so GDPR and UK
+GDPR apply. Two consequences worth naming to the client: employee communications
+monitoring is specifically regulated and the staff must be **informed**; and you would
+be a processor to their controller, which normally means a written data processing
+agreement. That document protects you as much as them. Neither of us is a lawyer — they
+should get their own.
+
+---
+
+## The configuration detail that matters more than it looks
+
+**All five collector addresses must go into the tenant's `internal_addresses`**, along
+with `tvdservices.com` in `internal_domains`. See `supabase/setup_tenant.sql`.
+
+A collector relays everything. Leave one off the list and the system reads it as an
+outside sender and files every offer against it — that collector becomes the client's
+largest supplier by a wide margin.
+
+This has already happened once. `internal_domains` was empty and **4,539 of roughly
+4,800 offers** were filed against the client's own staff, `sales@tvdservices.com` alone
+holding 4,161, as though a colleague were the biggest supplier in Europe. One empty
+array. Five collectors means five new ways to make the same mistake.
 
 ---
 
 ## When it is done, send me
 
-1. The collector email address
-2. Which of the five paths you tested and what the From showed
+1. The five collector addresses
+2. Which paths you tested and what the From showed
 3. Whether `tvdservices.com` is Google Workspace or Microsoft 365
-4. The fifth staff address, once Chandan gives it to you
-
-Then I add the collector to the tenant config and we move to the n8n side
-(`n8n/README.md`).
-
----
-
-## One configuration detail that matters more than it looks
-
-The collector relays **everything**. Unless it is listed in the tenant's
-`internal_addresses`, the system will treat it as an outside sender and file every
-single offer against it — the collector would appear as the client's largest supplier by
-a wide margin.
-
-This has already happened once. Before the fix, `internal_domains` was empty and
-**4,539 of roughly 4,800 offers** were filed against the client's own staff.
-`sales@tvdservices.com` alone held 4,161, as though a colleague were the biggest
-supplier in Europe. One empty array.
-
-So: the collector address goes into `supabase/setup_tenant.sql` the moment it exists,
-and `setup_tenant.sql` gets run again. Not later.
+4. Confirmation the staff were told
 
 ---
 
@@ -211,16 +303,18 @@ and `setup_tenant.sql` gets run again. Not later.
 
 **"Google won't let me create an app password."** 2-Step Verification is not on. Step 2.
 
-**"The forwarding confirmation code never arrived."** Check the collector's Spam. This
-is the one email that arrives before the never-spam filter can help, because it comes
-from Google rather than from one of the five addresses.
+**"The forwarding confirmation code never arrived."** Check the collector's Spam. It is
+the one email that arrives before the never-spam filter can help, because it comes from
+Google rather than from the staff address.
 
 **"Mail is arriving but n8n sees nothing."** Almost always Spam. Step 5.
 
-**"Everything is attributed to the wrong person."** Either the tenant config is missing
-an address, or an Outlook rule is using Forward instead of Redirect.
+**"A supplier's list never showed up."** The source filter was too narrow. Widen it —
+this is the failure mode that is invisible, so check for it deliberately rather than
+waiting to notice.
 
-**"Staff say they stopped getting their own mail."** Redirect on Outlook moves the
-message rather than copying it. If they want to keep a copy, use a rule with **Forward
-to** plus keeping the original, and accept 90% confidence instead of 100%. Worth asking
-them which they prefer before switching anything on.
+**"Everything is attributed to the wrong person."** A collector is missing from
+`internal_addresses`, or an Outlook rule is wrapping the message.
+
+**"Staff stopped getting their own mail."** Redirect moves rather than copies. Switch
+that mailbox to Forward and accept 90% confidence. Step 7.
