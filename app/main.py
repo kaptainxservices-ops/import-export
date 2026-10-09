@@ -35,6 +35,12 @@ async def lifespan(_: FastAPI) -> AsyncIterator[None]:
 
     log.info("import-export backend v%s starting (env=%s)", __version__, settings.app_env)
 
+    # Printed at startup because a CORS rejection is invisible from the server side:
+    # the browser refuses the response and the log shows a perfectly ordinary 200. The
+    # only way to tell a missing origin from a dead service is to be able to read what
+    # the service thinks it allows.
+    log.info("CORS origins allowed: %s", ", ".join(_allowed_origins()))
+
     # Fail loudly in logs rather than silently accepting or rejecting everything.
     if not settings.ingest_token:
         log.warning("INGEST_TOKEN is not set — /ingest will refuse every request")
@@ -67,6 +73,11 @@ app.add_middleware(
     CORSMiddleware,
     allow_origins=_allowed_origins(),
     allow_credentials=True,
-    allow_methods=["GET", "POST"],
+    # PATCH and DELETE are not optional extras here. The dashboard corrects a flagged
+    # row with PATCH /review/rows/{id}, edits a supplier with PATCH /suppliers/{id},
+    # and removes a deal leg with DELETE. A method missing from this list is refused by
+    # the browser at the preflight, before the request is sent — so the endpoint can be
+    # perfectly healthy and the button still does nothing but say "Failed to fetch".
+    allow_methods=["GET", "POST", "PATCH", "DELETE"],
     allow_headers=["Authorization", "Content-Type", "X-Ingest-Token"],
 )

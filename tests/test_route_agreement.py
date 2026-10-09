@@ -123,3 +123,31 @@ def test_the_scan_found_something():
 def test_the_scan_would_notice_a_missing_route():
     """Guards the guard. If this passes while the rest pass, the check has teeth."""
     assert not any(_matches("/review/nonsense".split("/"), route) for route in _routes())
+
+
+# ---------------------------------------------------------------- CORS
+
+def test_cors_allows_every_method_the_frontend_uses():
+    """A method missing from allow_methods is refused by the browser at the preflight.
+
+    The endpoint is healthy, the server log shows nothing wrong, and the button says
+    "Failed to fetch". allow_methods was GET and POST only while the dashboard was
+    already using PATCH to correct a flagged row and to edit a supplier, and DELETE to
+    remove a deal leg — so three features were dead in production and nothing on the
+    backend could have told you.
+    """
+    from app.main import app
+
+    cors = next(
+        m for m in app.user_middleware if "CORSMiddleware" in str(m.cls)
+    )
+    allowed = {method.upper() for method in cors.kwargs["allow_methods"]}
+
+    used = set()
+    for route in app.routes:
+        used |= {m for m in getattr(route, "methods", set()) if m not in {"HEAD", "OPTIONS"}}
+
+    assert used <= allowed, (
+        f"the backend serves {sorted(used - allowed)} but CORS does not allow them — "
+        "the browser will refuse those calls before they are sent"
+    )
