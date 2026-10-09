@@ -30,6 +30,11 @@ services:
         sync: false
       - key: DASHBOARD_ORIGIN
         sync: false
+      # Vercel renames the host on every deployment, so the exact list above goes
+      # stale the next time anyone deploys. Scope this to one project -- a pattern
+      # matching all of vercel.app lets any page anyone deploys there read the board.
+      - key: DASHBOARD_ORIGIN_REGEX
+        sync: false
       - key: SUPABASE_URL
         sync: false
       - key: SUPABASE_SECRET_KEY

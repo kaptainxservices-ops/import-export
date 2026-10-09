@@ -40,6 +40,8 @@ async def lifespan(_: FastAPI) -> AsyncIterator[None]:
     # only way to tell a missing origin from a dead service is to be able to read what
     # the service thinks it allows.
     log.info("CORS origins allowed: %s", ", ".join(_allowed_origins()))
+    if settings.dashboard_origin_regex:
+        log.info("CORS origin pattern: %s", settings.dashboard_origin_regex)
 
     # Fail loudly in logs rather than silently accepting or rejecting everything.
     if not settings.ingest_token:
@@ -72,6 +74,8 @@ app.include_router(suppliers.router)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=_allowed_origins(),
+    # Matches preview deployments, whose hostname changes on every push.
+    allow_origin_regex=get_settings().dashboard_origin_regex or None,
     allow_credentials=True,
     # PATCH and DELETE are not optional extras here. The dashboard corrects a flagged
     # row with PATCH /review/rows/{id}, edits a supplier with PATCH /suppliers/{id},

@@ -46,6 +46,15 @@ class Settings(BaseSettings):
     # this adds the deployed origin. Needed because the browser calls /matches directly.
     dashboard_origin: str = ""
 
+    # Vercel mints a new hostname for every deployment
+    # (kaptainx-5lkf2wh1h-kapt-ainx.vercel.app), so an exact list goes stale the next
+    # time anybody deploys and the dashboard dies with a CORS error that looks like a
+    # server fault. This matches a family of them instead.
+    #
+    # Scope it to YOUR project. `.*\.vercel\.app` would let any page anyone deploys on
+    # Vercel read this client's board with the viewer's own session.
+    dashboard_origin_regex: str = ""
+
     # Monitoring
     sentry_dsn: str = ""
 
