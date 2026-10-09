@@ -174,8 +174,24 @@ the supplier's domain — so forwarded supplier mail often lands in **Spam**. Th
 connection reads **INBOX** only. Anything in Spam is invisible, silently, forever.
 
 Gmail → ⚙ → See all settings → **Filters and Blocked Addresses** → **Create a new
-filter** → From: the one staff address that forwards here → Continue → tick **Never
-send it to Spam** → Create filter.
+filter**. Leave From, To and Subject empty. In **Includes the words** put:
+
+```
+deliveredto:tvd.feed.sales@gmail.com
+```
+
+— the collector's own address. Then **Create filter** → tick **Never send it to Spam**
+and **Also apply filter to matching conversations** → **Create filter**.
+
+> **Not `From: sales@tvdservices.com`.** Gmail's auto-forward preserves the original
+> `From:` header, so a forwarded supplier email arrives here showing the *supplier's*
+> address, not the staff member's. A filter on From would match almost nothing and the
+> rule would silently do nothing — which is the worst kind of wrong, because the
+> mailbox looks configured.
+>
+> `deliveredto:` matches the delivery envelope instead, which no forward rewrites.
+> This mailbox receives nothing but forwarded trade mail, so that is simply "everything
+> that lands here, never spam".
 
 ---
 
