@@ -135,7 +135,20 @@ Two environment variables matter more than they look:
 | Name | Why |
 | --- | --- |
 | `N8N_ENCRYPTION_KEY` | Set it **explicitly**. Credentials are encrypted with it; on an ephemeral filesystem a redeploy generates a new one and every stored credential becomes unrecoverable. |
-| `DB_TYPE=postgresdb` + `DB_POSTGRESDB_*` | Point n8n at its own schema in the existing Supabase Postgres, so no persistent disk is needed. Give it its own schema and role — not the application tables. |
+| A **persistent disk**, 1 GB, mounted at `/home/node/.n8n` | Where n8n keeps its workflows, credentials and history. Without it, a redeploy starts from an empty instance. $0.25/month. |
+
+**On storage: use the disk, not Postgres.** The obvious-looking option is to point n8n at
+the Supabase database it already has. On Render that means going through Supabase's
+connection pooler, because Supabase no longer offers direct IPv4 — which brings a
+pooler hostname, a session-mode port, and a username that must be written
+`n8n_user.<project-ref>` rather than `n8n_user`. Every one of those is a separate way to
+spend an afternoon on a connection error.
+
+n8n's default SQLite on a mounted disk avoids all of it, costs 25 cents a month, and is
+a perfectly ordinary single-instance setup. The trade is that backups are a disk
+snapshot rather than Supabase's, and n8n cannot be scaled to several replicas — neither
+matters for one mailbox poller. `supabase/n8n_database.sql` is kept for the day one of
+them does.
 
 Prove it before trusting it: save a throwaway credential, force a redeploy, confirm it
 still decrypts.
