@@ -218,6 +218,10 @@ looks exactly like a quiet trading day, and the trade has plenty of quiet days.
 
 ## Things that will come up
 
+**"access to env vars denied" on the payload builder.** n8n 2.x blocks `$env` in Code
+nodes by default. Set `N8N_BLOCK_ENV_ACCESS_IN_NODE=false` and redeploy. The error names
+the variable as though somebody set it; nobody did, it is the default.
+
 **Nothing arrives.** The trigger only looks at *unread* mail, and opening the message
 marks it read. Mark it unread again, or drop `customEmailConfig` in the trigger node.
 

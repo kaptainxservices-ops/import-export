@@ -98,6 +98,21 @@ base64-encoded spreadsheets — a 10 MB workbook is about 13 MB of base64 writte
 on every run. Seven days and a thousand runs is enough to debug last week's problem and
 not enough to fill a gigabyte.
 
+### Letting the workflow read its own configuration
+
+| Key | Value |
+|---|---|
+| `N8N_BLOCK_ENV_ACCESS_IN_NODE` | `false` |
+
+**n8n 2.x blocks `$env` inside Code nodes by default.** Without this the payload builder
+fails on its first line with *"access to env vars denied"*, and the error helpfully names
+a variable you never set — because the block is the shipped default, not something
+anybody configured.
+
+The workflow reads `$env.TVD_TENANT_ID` and `$env.TVD_INGEST_TOKEN` rather than carrying
+them in the workflow JSON, so that the file in the repository holds no secrets and the
+same workflow can point at a different backend by changing one setting.
+
 ### Keeping it inside its memory
 
 | Key | Value |
