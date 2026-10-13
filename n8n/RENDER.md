@@ -10,7 +10,12 @@ Render → **New → Web Service → Existing image**
 
 | Field | Value |
 |---|---|
-| Image URL | `docker.n8n.io/n8nio/n8n` |
+| Image URL | `docker.io/n8nio/n8n` |
+
+> Docker Hub, not `docker.n8n.io`. That second one is a registry mirror n8n runs
+> themselves — `docker pull` handles it, but Render's image lookup only speaks to
+> standard registries and reports it as "no public image found", which reads like the
+> image is private when it is simply somewhere Render cannot look.
 | Name | `n8n` |
 | Region | the same one as the backend |
 | Instance type | **Starter — $7/mo** |

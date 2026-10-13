@@ -123,7 +123,7 @@ A dedicated Gmail nobody reads by hand. On that account:
 ### 2. Somewhere to run n8n
 
 ```bash
-docker run -it --rm -p 5678:5678 -v n8n_data:/home/node/.n8n docker.n8n.io/n8nio/n8n
+docker run -it --rm -p 5678:5678 -v n8n_data:/home/node/.n8n docker.io/n8nio/n8n
 ```
 
 Fine for testing. For the client it has to be hosted, and on Render that means the
