@@ -273,7 +273,16 @@ def _build_row(
         price=price,
         currency=row_currency,
         brand=brand.strip() if isinstance(brand, str) and brand.strip() else None,
-        category=cell("category") or detect_category(description),
+        # The brand is given a second chance to name the category. Landotech heads a
+        # block 'SAMSUNG' and then writes 'A17 5G DS SM-A176 128GB' on every row under
+        # it, so the description alone carries no brand at all — and the category rules
+        # need one before they will call a row a handset. Only consulted when the
+        # description has already come up empty.
+        category=(
+            cell("category")
+            or detect_category(description)
+            or (detect_category(f"{brand} {description}") if brand else None)
+        ),
         code=cell("code") or None,
         section=section,
         source_ref=f"{source} row {line_number}",

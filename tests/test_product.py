@@ -102,6 +102,35 @@ def test_the_fallback_does_not_outrank_a_real_match(line):
 
 
 @pytest.mark.parametrize(
+    ("line", "category"),
+    [
+        ("Galaxy Watch8 44mm LTE, Graphite", "wearable"),
+        ("Galaxy Watch8 Classic 46mm BT, Black", "wearable"),
+        ("Samsung Galaxy Buds3 Pro Silver", "audio"),
+        ("Samsung Buds4 Pro, R640 Black", "audio"),
+        ("Samsung Galaxy Tab S10 5G 12/256GB", "tablet"),
+        ("Xiaomi Pad7 Pro 8/256GB Blue", "tablet"),
+        ("AirPods4 ANC white", "audio"),
+    ],
+)
+def test_a_model_number_glued_to_the_category_word(line, category):
+    """Samsung writes 'Galaxy Watch8', not 'Galaxy Watch 8'. The trailing word boundary
+    failed on all of those, which left 28 real rows uncategorised — and then the handset
+    fallback read the brand and the LTE and filed a watch as a phone."""
+    assert parse_product(line).category == category
+
+
+@pytest.mark.parametrize(
+    "line",
+    ["Bandwidth tester tool", "Watchdog alarm unit", "Padlock steel 40mm"],
+)
+def test_the_glued_number_allowance_is_only_a_number(line):
+    """Dropping the boundary altogether, rather than allowing digits before it, would
+    make 'bandwidth' a wearable."""
+    assert parse_product(line).category not in {"wearable", "tablet"}
+
+
+@pytest.mark.parametrize(
     "line",
     [
         "Huawei E5330 Mobile WLAN-Router White",

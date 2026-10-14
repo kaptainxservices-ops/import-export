@@ -196,6 +196,40 @@ def test_section_headings_are_inherited():
     assert all(r.brand == "Samsung" for r in table.rows)
 
 
+def test_a_section_heading_can_name_the_category_too():
+    """Landotech heads a block 'SAMSUNG' and then writes 'A17 5G DS SM-A176 128GB' on
+    every row under it, so no row carries a brand of its own — and the category rules
+    need a brand before they will call anything a handset. 94 rows across the samples
+    were uncategorised for exactly this reason, which hid them behind the board's
+    category filter."""
+    grid = [
+        ["Model", "Colour", "Qty", "Price"],
+        ["SAMSUNG", "", "", ""],
+        ["A17 5G DS SM-A176 128GB", "Black", "420", "135"],
+        ["Z Fold 8 Ultra F976 5G 256GB", "Violet", "6", "1890"],
+    ]
+
+    rows = parse_grid(Grid(rows=grid, source="landotech")).rows
+
+    assert [r.brand for r in rows] == ["Samsung", "Samsung"]
+    assert [r.category for r in rows] == ["phone", "phone"]
+
+
+def test_the_section_heading_does_not_overrule_the_description():
+    """It is consulted only when the description has come up empty, so an accessory
+    listed under a brand heading stays an accessory."""
+    grid = [
+        ["Model", "Qty", "Price"],
+        ["SAMSUNG", "", ""],
+        ["Tempered glass for Galaxy A56", "600", "0.75"],
+        ["Galaxy Watch8 44mm LTE", "60", "245"],
+    ]
+
+    rows = parse_grid(Grid(rows=grid, source="landotech")).rows
+
+    assert [r.category for r in rows] == ["accessory", "wearable"]
+
+
 def test_a_later_heading_replaces_the_earlier_one():
     table = parse_grid(_grid([
         ["Description", "Qty", "Price"],

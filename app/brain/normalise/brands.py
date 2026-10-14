@@ -127,10 +127,16 @@ _CATEGORY_PATTERNS: list[tuple[str, str]] = [
     (r"\b(?:h(?:u|\u00fc)lle|etui|folie|schutzglas|panzerglas|displayschutz"
      r"|coque|verre\s*tremp\w*|protezione|schermo|pellicola|vetro"
      r"|funda|cristal|protetor|capa)\b", "accessory"),
-    (r"\b(?:airpods?|earbuds?|headphones?|headset|speaker|soundbar|buds)\b", "audio"),
-    (r"\b(?:watch|band|amazfit|smartwatch)\b", "wearable"),
+    # `\d*` before the boundary, here and on the two rules below it, because Samsung
+    # glues the model number straight onto the category word: 'Galaxy Watch8 44mm LTE',
+    # 'Galaxy Buds3 Pro', 'Galaxy Tab S10'. Requiring a plain boundary left every one of
+    # those rows uncategorised, and then the handset fallback — seeing a Samsung and an
+    # LTE — called a watch a phone. A bare `\b` removal would match 'bandwidth' and
+    # 'watchdog'; a digit is the only thing allowed in between.
+    (r"\b(?:airpods?|earbuds?|headphones?|headset|speaker|soundbar|buds)\d*\b", "audio"),
+    (r"\b(?:watch|band|amazfit|smartwatch)\d*\b", "wearable"),
     (r"\b(?:playstation|ps5|ps4|xbox|switch|console|controller|dualsense)\b", "console"),
-    (r"\b(?:ipad|tab\b|tablet|pad)\b", "tablet"),
+    (r"\b(?:ipad|tab\b|tablet|pad)\d*\b", "tablet"),
     (r"\b(?:tv|dled|qled|oled\s*tv|smart\s*tv|television)\b", "tv"),
     (r"\b(?:laptop|notebook|macbook|thinkpad|chromebook)\b", "computer"),
     # No outer \b on this one: 'Galaxy A56' would fail a trailing boundary after
@@ -191,7 +197,13 @@ _HANDSET_NOTATION = re.compile(
 # handsets. These words veto the fallback; they never veto a real match.
 _NOT_A_HANDSET = re.compile(
     r"\b(?:router|routeur|cpe|hotspot|mifi|modem|wlan|wi-?fi|dongle|repeater|"
-    r"extender|gateway|access\s*point|usb\s*stick|sim\s*card|e-?sim)\b",
+    r"extender|gateway|access\s*point|usb\s*stick|sim\s*card|e-?sim)\b"
+    # Belt and braces for the categories the whitelist is meant to have caught already.
+    # When one of its spellings slips through — 'Watch8' did — the fallback would read
+    # the brand and the LTE and file a watch as a handset, which is worse than leaving
+    # the row uncategorised.
+    r"|\b(?:watch|smartwatch|buds|earbuds?|airpods?|headphones?|headset|airtag|"
+    r"tracker|tablet|laptop|notebook|console)\d*\b",
     re.IGNORECASE,
 )
 
