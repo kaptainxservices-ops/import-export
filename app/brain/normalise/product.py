@@ -135,14 +135,21 @@ def parse_product(
     text: str | None,
     ean: str | None = None,
     colour: str | None = None,
+    capacity: str | None = None,
+    ram: str | None = None,
 ) -> ProductSpec:
     """Parse one product line. Never raises — a bad line yields an empty spec.
 
-    `colour` is the value from a dedicated colour column, and it takes precedence over
-    anything read out of the description. Sheets that separate colour out do not repeat
-    it in the description, so without this the three rows 'Echo Spot 2024 speaker' in
-    black, blue and white all reduce to one identity — and two of the three vanish into
-    the third. Masterfone's list alone loses 27% of its rows that way.
+    `colour`, `capacity` and `ram` are values from dedicated columns, and each takes
+    precedence over anything read out of the description. Sheets that separate a field
+    out do not repeat it in the description, so without this the three rows 'Echo Spot
+    2024 speaker' in black, blue and white all reduce to one identity — and two of the
+    three vanish into the third. Masterfone's list alone loses 27% of its rows that way.
+
+    Capacity is the same failure with a worse ending, because capacity is part of
+    identity: a buying sheet that heads one column 'Memory' and names only 'iPhone 16'
+    in the description produces 128GB, 256GB and 512GB rows that are indistinguishable,
+    so they overwrite one another and two of the three requirements are never matched.
     """
     if not text or not text.strip():
         return ProductSpec(warnings=["empty line"])
@@ -150,7 +157,12 @@ def parse_product(
     raw = re.sub(r"\s+", " ", text).strip()
 
     resolved_ean = _clean_ean(ean) or _find_ean(raw)
-    ram, capacity, capacity_warning = _parse_ram_and_capacity(raw)
+    read_ram, read_capacity, capacity_warning = _parse_ram_and_capacity(raw)
+    column_ram, column_capacity = _parse_columns(capacity, ram)
+    ram = column_ram if column_ram is not None else read_ram
+    capacity = column_capacity if column_capacity is not None else read_capacity
+    if column_capacity is not None:
+        capacity_warning = None
     resolved_colour = normalise_colour(colour) if colour else _find_colour(raw)
 
     network_match = _NETWORK.search(raw)
@@ -371,6 +383,49 @@ def _parse_ram_and_capacity(raw: str) -> tuple[int | None, int | None, str | Non
         return ram_named, None, f"implausible capacity {implausible}"
 
     return ram_named, None, None
+
+
+def _parse_columns(
+    capacity: str | None, ram: str | None
+) -> tuple[int | None, int | None]:
+    """Read a dedicated capacity and RAM column.
+
+    Delegates to the same reader as the description, so '256', '256GB', '1TB', '1TGB'
+    and '8/256' all work in a cell exactly as they do in a product name. Two things
+    differ once a header has named the column:
+
+    A bare small number is believed. In a description '64' is usually a model number,
+    which is why `_BARE_CAPACITY` starts at 128 — but a cell under a 'Memory' heading
+    saying 64 means 64GB and nothing else.
+
+    A pair in the capacity cell is read as RAM+storage, so '8/256' under 'Memory' gives
+    storage 256 rather than being refused for having two numbers in it.
+    """
+    read_ram: int | None = None
+    read_capacity: int | None = None
+
+    if ram and ram.strip():
+        parsed_ram, _, _ = _parse_ram_and_capacity(ram)
+        if parsed_ram is None:
+            bare = re.fullmatch(r"\s*(\d{1,2})\s*(?:gb)?\s*", ram, re.IGNORECASE)
+            if bare and int(bare.group(1)) in _VALID_RAM_GB:
+                parsed_ram = int(bare.group(1))
+        read_ram = parsed_ram
+
+    if capacity and capacity.strip():
+        pair_ram, parsed_capacity, _ = _parse_ram_and_capacity(capacity)
+        if parsed_capacity is None:
+            bare = re.fullmatch(r"\s*(\d{1,4})\s*(?:gb)?\s*", capacity, re.IGNORECASE)
+            if bare:
+                value = _ROUNDED.get(int(bare.group(1)), int(bare.group(1)))
+                if value in _VALID_GB:
+                    parsed_capacity = value
+        read_capacity = parsed_capacity
+        # 'Memory: 8/256' names both. The RAM column still wins if there is one.
+        if read_ram is None and pair_ram is not None:
+            read_ram = pair_ram
+
+    return read_ram, read_capacity
 
 
 def _find_colour(raw: str) -> str | None:

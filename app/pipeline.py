@@ -26,11 +26,17 @@ from app.brain.companies import find_unique
 from app.brain.completeness import detect_list_completeness
 from app.brain.confidence import score_row
 from app.brain.llm import UsageLog, classify_side_llm, mapper_for
-from app.brain.normalise import detect_declared_currency, expand_variants, parse_product
+from app.brain.normalise import (
+    ProductSpec,
+    detect_declared_currency,
+    expand_variants,
+    parse_product,
+)
 from app.brain.quoting import strip_quoted_history
 from app.brain.reconcile import IncomingOffer, ReconcileResult, reconcile
 from app.brain.sender import resolve_sender
 from app.brain.tables import ColumnMapper, parse_grid, read_html_tables, read_spreadsheet
+from app.brain.tables.parser import TableRow
 from app.db.models import EmailRecord, ImportRecord, UsageEvent
 from app.db.repository import Repository
 from app.schemas.email import Attachment, InboundEmail
@@ -375,9 +381,7 @@ def _extract_and_reconcile(
             has_decimal_hint=bool(counterparty.decimal_separator),
             side=side,
         )
-        for row, spec in (
-            (r, parse_product(r.description, ean=r.ean, colour=r.colour)) for r in rows
-        )
+        for row, spec in ((r, _spec(r)) for r in rows)
     ]
 
     flagged = sum(1 for c in scores if c.needs_review)
@@ -425,7 +429,7 @@ def _extract_and_reconcile(
             },
         )
         for row, spec, scored in (
-            (r, parse_product(r.description, ean=r.ean, colour=r.colour), c)
+            (r, _spec(r), c)
             # strict: rows and scores are built from the same list one line above, so a
             # length mismatch is a bug rather than a case to tolerate quietly.
             for r, c in zip(rows, scores, strict=True)
@@ -587,6 +591,22 @@ def _record_usage(
     return len(usage.calls)
 
 
+def _spec(row: TableRow) -> ProductSpec:
+    """One place that turns an extracted row into a product spec.
+
+    Written out because it is needed twice — once for confidence scoring and once for
+    the offer itself — and the two must agree. When they drifted apart previously, a row
+    was scored on one reading of its capacity and stored under another.
+    """
+    return parse_product(
+        row.description,
+        ean=row.ean,
+        colour=row.colour,
+        capacity=row.capacity,
+        ram=row.ram,
+    )
+
+
 def extract_rows(
     payload: InboundEmail,
     decimal_hint: str | None,
@@ -657,8 +677,6 @@ def _rows_from_prose(body: str | None, decimal_hint: str | None):
         parse_quantity,
         strip_marked_prices,
     )
-    from app.brain.tables.parser import TableRow
-
     rows: list[TableRow] = []
     expanded = 0
 

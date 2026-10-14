@@ -325,6 +325,69 @@ def test_colour_column_beats_the_description():
     assert spec.colour == "Blue"
 
 
+def test_capacity_column_separates_requirements_the_description_cannot():
+    """A buying sheet heads one column 'Memory' and writes only 'Apple iPhone 16' in
+    the description. Capacity is part of identity_key, so without reading that column
+    the 128, 256 and 512 rows are one identity — they overwrite one another and two of
+    the three requirements are never matched against anything."""
+    small = parse_product("Apple iPhone 16", capacity="128")
+    large = parse_product("Apple iPhone 16", capacity="512")
+
+    assert (small.capacity_gb, large.capacity_gb) == (128, 512)
+    assert small.identity_key() != large.identity_key()
+
+
+@pytest.mark.parametrize(
+    ("cell", "capacity"),
+    [
+        ("256", 256),
+        ("256GB", 256),
+        ("128 GB", 128),
+        ("1TB", 1024),
+        ("1TGB", 1024),
+        ("1000GB", 1024),
+        ("64", 64),
+        ("32", 32),
+        ("16", 16),
+        ("8/256", 256),
+        ("", None),
+        ("-", None),
+        ("N/A", None),
+        ("40", None),
+    ],
+)
+def test_the_capacity_cell_in_the_forms_suppliers_write(cell, capacity):
+    """`64` is read here and not in a description. In a product name a small number is
+    usually a model — 'Apple iPhone 16 Black' must not become a 16GB handset — but a
+    cell under a 'Memory' heading saying 64 means 64GB and nothing else. `40` is
+    refused in both places: no one ships a 40GB phone."""
+    assert parse_product("Apple iPhone 16", capacity=cell).capacity_gb == capacity
+
+
+def test_a_capacity_cell_holding_a_pair_names_the_storage():
+    spec = parse_product("Samsung A37 5G DS", capacity="8/256")
+    assert (spec.ram_gb, spec.capacity_gb) == (8, 256)
+
+
+def test_a_ram_column_does_not_become_the_capacity():
+    spec = parse_product("Samsung A37 5G DS", capacity="256", ram="8")
+    assert (spec.ram_gb, spec.capacity_gb) == (8, 256)
+
+
+def test_the_capacity_column_beats_the_description():
+    """The column is the supplier's own structured answer. When the two disagree the
+    description is the one that was typed by hand."""
+    spec = parse_product("iPhone 15 128GB Black", capacity="256")
+    assert spec.capacity_gb == 256
+
+
+def test_an_empty_capacity_column_leaves_the_description_alone():
+    """Sheets leave the cell blank on the rows where it does not apply — an Apple Watch
+    on a phone list. Those rows must keep whatever the description says."""
+    spec = parse_product("iPhone 15 128GB Black", capacity="")
+    assert spec.capacity_gb == 128
+
+
 def test_upc_and_ean_for_the_same_product_key_identically():
     """A US supplier sends a 12-digit UPC, a European one the 13-digit EAN, for the
     same physical product. Left unpadded they would never match each other — which

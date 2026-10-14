@@ -45,6 +45,17 @@ _ALIASES: dict[str, tuple[str, ...]] = {
         "code", "codes", "partcode", "part code", "part no", "part number", "p n", "pn",
         "artikelnummer", "artnr", "sku", "mpn", "ref", "reference", "codice", "kod",
     ),
+    # Plenty of sheets give storage its own column and leave it out of the product
+    # name, so the description alone yields no capacity — and capacity is part of
+    # identity, which means every size of one model collapses into a single row and all
+    # but one price disappears. 'Memory' means storage in this trade; RAM, when a sheet
+    # separates it, is headed 'RAM'.
+    "capacity": (
+        "capacity", "capacities", "storage", "memory", "int memory", "internal memory",
+        "rom", "speicher", "memoria", "capacita", "capacidad", "almacenamiento",
+        "geheugen", "opslag", "pamiec", "pamiec wewnetrzna", "stocare",
+    ),
+    "ram": ("ram", "ram gb", "ram memory", "arbeitsspeicher", "memoria ram", "ram rom"),
     "category": ("category", "categories", "kategorie", "categoria", "categorie", "kategoria"),
     "currency": ("currency", "waehrung", "wahrung", "valuta", "moneda", "devise"),
     "colour": ("colour", "color", "colours", "colors", "farbe", "kleur", "colore", "kolor"),
@@ -73,6 +84,18 @@ _HEADER_CURRENCY = [
     (re.compile(r"\baed\b|\bdhs?\b", re.IGNORECASE), "AED"),
     (re.compile(r"\bpln\b|\bzł\b", re.IGNORECASE), "PLN"),
 ]
+
+# Words that name a column but also appear inside product names. Yukatel lists
+# 'Google Pixel 10 5G Dual Sim 12GB RAM 128GB' as a description, and matching 'ram'
+# anywhere in a cell made every one of those rows look like a header: four of its
+# tables stopped parsing and eleven rows of live stock vanished.
+#
+# Honoured only in a cell short enough to be a heading. A heading is 'Memory', 'RAM /
+# ROM', 'Int. Memory (GB)'; a description is nine words long. Whole-cell matching above
+# is unaffected, so a column headed exactly 'Memory' still works however this reads.
+_ONLY_IN_A_SHORT_CELL = frozenset(
+    {"ram", "rom", "memory", "memoria", "storage", "speicher", "geheugen", "opslag"}
+)
 
 _PUNCT = re.compile(r"[^\w\s€$£]", re.UNICODE)
 
@@ -133,7 +156,7 @@ def classify_header_cell(cell: str | None) -> str | None:
     # 'Preis / Price €' normalises to 'preis price ' — match on the words present.
     words = text.split()
     for word in words:
-        if word in _LOOKUP:
+        if word in _LOOKUP and not (word in _ONLY_IN_A_SHORT_CELL and len(words) > 3):
             return _LOOKUP[word]
 
     for alias, field_name in _LOOKUP.items():

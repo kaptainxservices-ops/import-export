@@ -64,6 +64,11 @@ class TableRow:
     description: str
     ean: str | None = None
     colour: str | None = None
+    # Both are raw cell text, not parsed numbers: a column headed 'Memory' holds '256',
+    # '256GB', '8/256' and '1TB' in the same sheet, and product parsing already reads
+    # all four. Normalising here would mean a second, worse copy of that.
+    capacity: str | None = None
+    ram: str | None = None
     quantity: int | None = None
     price: float | None = None
     currency: str | None = None
@@ -262,6 +267,8 @@ def _build_row(
         # Sheets that give colour its own column do not repeat it in the description,
         # so ignoring it collapses every finish of a product into one identity.
         colour=cell("colour") or None,
+        capacity=cell("capacity") or None,
+        ram=cell("ram") or None,
         quantity=quantity,
         price=price,
         currency=row_currency,

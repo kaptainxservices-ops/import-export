@@ -89,6 +89,53 @@ def test_currency_is_read_from_the_header():
     assert map_columns(["Description", "Prezzo EUR"]).currency == "EUR"
 
 
+def test_capacity_and_ram_get_their_own_columns():
+    """Capacity is part of identity, so a sheet that heads one column 'Memory' and
+    names only 'iPhone 16' in the description had every size collapse into one row."""
+    mapped = map_columns(["Model", "Memory", "Colour", "Qty", "Price", "Currency"]).columns
+    assert mapped == {
+        "description": 0, "capacity": 1, "colour": 2, "quantity": 3, "price": 4,
+        "currency": 5,
+    }
+
+    both = map_columns(["Description", "RAM", "Storage", "Qty", "Price"]).columns
+    assert both["ram"] == 1
+    assert both["capacity"] == 2
+
+
+@pytest.mark.parametrize(
+    "header",
+    [
+        ["Description", "Capacity", "Price"],
+        ["Description", "Int. Memory", "Price"],
+        ["Description", "Speicher", "Price"],
+        ["Description", "Pamiec", "Price"],
+        ["Description", "Memory (GB)", "Price"],
+    ],
+)
+def test_the_capacity_column_in_its_many_spellings(header):
+    assert map_columns(header).columns.get("capacity") == 1
+
+
+def test_a_description_containing_the_word_ram_is_not_a_header():
+    """Yukatel lists 'Google Pixel 10 5G Dual Sim 12GB RAM 128GB' as a description.
+    Reading 'ram' anywhere in a cell made every one of those rows score as a header, so
+    four of its tables stopped parsing and eleven rows of live stock disappeared. A
+    heading is short; a description is nine words long."""
+    grid = [
+        ["", "Notice", "", "Price \u20ac"],
+        ["Google Pixel 10 5G Dual Sim 12GB RAM 128GB", "", "10 YP", "455,00"],
+        ["Google Pixel 10 5G Dual Sim 12GB RAM 256GB", "", "10 YP", "539,00"],
+    ]
+    table = parse_grid(Grid(rows=grid, source="yukatel"), decimal_hint=",")
+
+    assert not table.needs_column_mapping
+    assert len(table.rows) == 2
+    assert table.column_map is not None
+    assert table.column_map.header_row == 0
+    assert "ram" not in table.column_map.columns
+
+
 def test_leftmost_quantity_wins():
     """'Ready' and 'Incoming' are both quantities; stock on hand is the one that can
     be sold today."""
