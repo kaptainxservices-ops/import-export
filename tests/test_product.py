@@ -58,6 +58,65 @@ def test_bare_codes_without_samsung_context_are_not_claimed(line):
     assert parse_product(line).brand != "Samsung"
 
 
+# ---------------------------------------------------------------- handset fallback
+
+@pytest.mark.parametrize(
+    "line",
+    [
+        "Motorola Edge 70 Pro 5G 8/256GB PANTONE Titan",
+        "Xiaomi POCO M8 Pro 5G 12/512GB Black",
+        "Honor Magic V6 16+512gb",
+        "Oppo A6X 4/128GB Black",
+        "Realme Note 60 4G 3+64GB / Black",
+        "Nokia G22 Dual Sim 4GB RAM 64GB Graphite Grey EU",
+        "vivo X300 Pro 5G 16/512GB",
+        "Samsung S26+ S947 5G 12/256GB ds Black",
+    ],
+)
+def test_unknown_model_families_are_still_handsets(line):
+    """The category whitelist is a list of model families, and vendors rename their
+    ranges every year. A third of the real corpus had no category at all because of it,
+    which hid that stock behind the board's category filter.
+
+    A handset brand plus handset notation — RAM/storage as `8/256`, or 5G/dual-SIM —
+    is enough to say phone even when the family is one nobody has seen before.
+    """
+    assert parse_product(line).category == "phone"
+
+
+@pytest.mark.parametrize(
+    "line",
+    [
+        "Samsung Common 10,000mAh Power Bank",
+        "Apple AirTag 4er-Pack, Model No. A2187",
+        "Xiaomi Redmi Buds 6 Play Black",
+        "Samsung Galaxy Watch 8 44mm LTE Graphite",
+        "Apple iPad Air 11 256GB",
+        "Xiaomi Redmi Pad SE 8.7 4/128GB",
+    ],
+)
+def test_the_fallback_does_not_outrank_a_real_match(line):
+    """It runs only when every other rule has declined, so a wearable stays a wearable,
+    a tablet stays a tablet, and a power bank with a brand on it stays an accessory."""
+    assert parse_product(line).category != "phone"
+
+
+@pytest.mark.parametrize(
+    "line",
+    [
+        "Huawei E5330 Mobile WLAN-Router White",
+        "ZTE MF927U 4G LTE Mobile Hotspot",
+        "TCL 5G CPE Router Indoor White",
+        "ZTE MF79U 4G LTE USB Stick White",
+    ],
+)
+def test_network_kit_is_not_swept_up_as_a_handset(line):
+    """The reason the fallback needs a veto list at all. Mobile broadband gear carries a
+    handset brand and 4G/5G on the same line, and nothing else in the whitelist claims
+    it, so the fallback was the only rule looking — and it got these wrong."""
+    assert parse_product(line).category != "phone"
+
+
 def test_a_case_for_an_iphone_is_an_accessory_not_a_phone():
     """'A Good Case for iPhone 11' names an iPhone only to state compatibility.
     Filing it as a phone would put a €1.50 item on the board beside €900 handsets."""

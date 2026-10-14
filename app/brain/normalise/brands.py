@@ -159,6 +159,43 @@ _SAMSUNG_CONTEXT = re.compile(
 )
 
 
+# A handset the model-family whitelist above cannot name.
+#
+# That whitelist lists ranges -- iphone, galaxy A56, pixel 9, redmi -- and every vendor
+# renames its range every year. On the real corpus 1,988 rows of 6,524 (30%) reached the
+# board with no category at all, and most were plainly phones: HONOR 600 PRO 5G,
+# MOTO EDGE 70 FUSION, OPPO A6 5G, POCO M8 PRO 5G, vivo X300 Pro, NOKIA 3210 4G. Only
+# 16% of rows were labelled 'phone', in a business that trades phones.
+#
+# Category is not part of identity, so this was never a wrong price on the board -- it
+# was the category filter hiding a third of the stock, which is how a trader concludes
+# the tool is lying to them.
+#
+# Gated exactly like _SAMSUNG_CODE below, and for the same reason: a handset brand is
+# not evidence on its own, because every one of these vendors also sells chargers and
+# earbuds. The line must ALSO carry notation only a handset listing uses -- the '8/256'
+# or '12+512' memory pair, or a network generation. Checked last, so anything the
+# accessory, wearable, audio or tablet rules already claimed keeps their verdict.
+_HANDSET_BRAND = re.compile(
+    r"\b(?:honor|motorola|moto|nokia|oppo|poco|xiaomi|vivo|realme|tecno|infinix|"
+    r"zte|tcl|alcatel|oneplus|huawei|nubia|samsung|apple|google|sony|asus)\b",
+    re.IGNORECASE,
+)
+_HANDSET_NOTATION = re.compile(
+    r"\b\d{1,2}\s*[/+]\s*\d{2,4}\s*(?:gb|tb)?\b"
+    r"|\b(?:5g|4g|lte|dual\s*sim|duos)\b",
+    re.IGNORECASE,
+)
+# Network kit wears the same badges. A mobile hotspot is a Huawei with 4G LTE on the
+# line, and a CPE box is a TCL with 5G on it, so the notation alone would call both
+# handsets. These words veto the fallback; they never veto a real match.
+_NOT_A_HANDSET = re.compile(
+    r"\b(?:router|routeur|cpe|hotspot|mifi|modem|wlan|wi-?fi|dongle|repeater|"
+    r"extender|gateway|access\s*point|usb\s*stick|sim\s*card|e-?sim)\b",
+    re.IGNORECASE,
+)
+
+
 def detect_brand(text: str | None) -> str | None:
     if not text:
         return None
@@ -204,6 +241,16 @@ def detect_category(text: str | None) -> str | None:
         if pattern.search(text):
             found = name
             break
+
+    # The whitelist names ranges and vendors rename ranges. Only consulted when nothing
+    # else matched, so a charger or a pair of earbuds keeps the verdict it already has.
+    if (
+        found is None
+        and _HANDSET_BRAND.search(text)
+        and _HANDSET_NOTATION.search(text)
+        and not _NOT_A_HANDSET.search(text)
+    ):
+        found = "phone"
 
     # Only ever downgrades a handset verdict. A row already read as audio or a wearable
     # is left alone: 'earbuds for iPhone' are still earbuds.
