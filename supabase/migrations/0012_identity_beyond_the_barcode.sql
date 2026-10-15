@@ -15,7 +15,21 @@
 -- line — the exact pair the edition work exists to keep apart, undone by the EAN
 -- branch skipping over it.
 --
--- So capacity, colour and edition now qualify the EAN as well as the spec fallback.
+-- The same list makes the point a second way. It carries no EANs at all, and prices
+-- Watch Series 11 42mm Silver at 355 and at 432 under one product name — the only
+-- thing separating them is the part number, MF8J4MP/A against MF8J4WF/A. A
+-- manufacturer part number names a product globally, exactly as an EAN does, so it
+-- qualifies identity too.
+--
+-- A seller's own article number does not, and the difference is not cosmetic: one
+-- supplier's 'Artikelnummer' column lists the same case twice at the same price under
+-- A009571 and A010679 — two lines in their catalogue, one lot of stock. Keying on that
+-- splits 19 rows that belong together. The column header is what tells the two apart;
+-- see `_SELLERS_OWN_CODE` in app/brain/tables/columns.py. Only a part number reaches
+-- the `part_number` column, which is why this expression can use it without a guard.
+--
+-- So capacity, colour, edition and part number now qualify the EAN as well as the spec
+-- fallback.
 -- They are the supplier's own structured statement of what the row is, and when those
 -- disagree the rows are different stock whatever the barcode says. Grade and region
 -- stay out, here as before: they describe the condition of a lot, not the product.
@@ -38,6 +52,14 @@
 -- easier to satisfy — the new key is strictly more discriminating than the old one —
 -- so no existing pair of live rows can be in violation after this runs.
 
+alter table public.offers
+    add column if not exists part_number text;
+
+comment on column public.offers.part_number is
+    'The manufacturer''s part number, where a column gave one — MF8J4WF/A, '
+    'SM-X130NZSEEUE. Part of identity: it names a product globally the way an EAN '
+    'does. A seller''s own article number is kept in `code` and is NOT identity.';
+
 drop index if exists offers_live_identity_uniq;
 
 alter table public.offers drop column if exists identity_key;
@@ -50,12 +72,14 @@ alter table public.offers
                      || '|' || coalesce(capacity_gb::text, '')
                      || '|' || lower(coalesce(colour, ''))
                      || '|' || lower(coalesce(edition, ''))
+                     || '|' || lower(coalesce(part_number, ''))
             else 'spec:'
                  || lower(coalesce(brand, ''))           || '|'
                  || lower(coalesce(description_key, '')) || '|'
                  || coalesce(capacity_gb::text, '')      || '|'
                  || lower(coalesce(colour, ''))          || '|'
-                 || lower(coalesce(edition, ''))
+                 || lower(coalesce(edition, ''))         || '|'
+                 || lower(coalesce(part_number, ''))
         end
     ) stored;
 
@@ -64,8 +88,8 @@ create unique index if not exists offers_live_identity_uniq
     where status = 'live';
 
 comment on column public.offers.identity_key is
-    'What makes two rows the same lot. EAN plus capacity, colour and edition when the '
-    'row has a barcode; brand plus normalised description plus the same three when it '
+    'What makes two rows the same lot. EAN plus capacity, colour, edition and part number when the '
+    'row has a barcode; brand plus normalised description plus the same four when it '
     'does not. Mirrors ProductSpec.identity_key() — the two must stay in step.';
 
 comment on column public.offers.edition is

@@ -468,6 +468,25 @@ def test_one_ean_over_two_editions_is_two_products():
     assert enterprise.identity_key() != open_market.identity_key()
 
 
+def test_one_product_name_over_two_part_numbers_is_two_products():
+    """An Apple Watch list carries no EANs at all and prices Watch Series 11 42mm
+    Silver at 355 and at 432 under one product name. The part number is the only thing
+    separating them, and a manufacturer part number names a product globally the way an
+    EAN does."""
+    name = "Watch Series 11 GPS + Cellular 42mm Silver AC, Purple Fog Sport Band - M/L"
+    mp = parse_product(name, part_number="MF8J4MP/A")
+    wf = parse_product(name, part_number="MF8J4WF/A")
+
+    assert mp.identity_key() != wf.identity_key()
+
+
+def test_a_row_without_a_part_number_is_unaffected():
+    """Most lists have no such column, and their keys must not change shape because one
+    does. The qualifier is empty, not absent."""
+    plain = parse_product("Apple iPhone 16 128GB Black")
+    assert plain.identity_key().endswith("|")
+
+
 def test_grade_is_still_not_identity():
     """Deliberate, and unchanged by the above. A grade describes the condition of a lot
     rather than naming a product, and two graded lots of one handset are the same row

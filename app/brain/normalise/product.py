@@ -108,6 +108,10 @@ class ProductSpec:
     network: str | None = None
     dual_sim: bool | None = None
     edition: str | None = None
+    # The manufacturer's own part number, when a column gave one. A global name for the
+    # product, like an EAN, so it qualifies identity; the seller's internal article
+    # number does not and never reaches here.
+    part_number: str | None = None
     description: str = ""
     description_key: str = ""
     match_key: str = ""
@@ -136,6 +140,7 @@ class ProductSpec:
                 str(self.capacity_gb or ""),
                 (self.colour or "").lower(),
                 (self.edition or "").lower(),
+                (self.part_number or "").lower(),
             ]
         )
 
@@ -153,6 +158,7 @@ def parse_product(
     colour: str | None = None,
     capacity: str | None = None,
     ram: str | None = None,
+    part_number: str | None = None,
 ) -> ProductSpec:
     """Parse one product line. Never raises — a bad line yields an empty spec.
 
@@ -196,6 +202,7 @@ def parse_product(
         network=network_match.group(1).upper() if network_match else None,
         dual_sim=True if _DUAL_SIM.search(raw) else None,
         edition=_edition(raw),
+        part_number=(part_number or "").strip() or None,
         description=raw,
         description_key=build_description_key(raw),
         match_key=build_match_key(raw),

@@ -413,6 +413,7 @@ def _extract_and_reconcile(
                 "network": spec.network,
                 "dual_sim": spec.dual_sim,
                 "edition": spec.edition,
+                "part_number": spec.part_number,
                 # Grade and region were parsed and then dropped on the floor: both have
                 # had columns since the first migration and nothing ever wrote to them.
                 # 'A/A+' and 'ZP/A' are half of what a trader reads before quoting.
@@ -604,6 +605,7 @@ def _spec(row: TableRow) -> ProductSpec:
         colour=row.colour,
         capacity=row.capacity,
         ram=row.ram,
+        part_number=row.part_number,
     )
 
 

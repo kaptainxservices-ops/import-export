@@ -207,6 +207,7 @@ def sql_identity_key(spec) -> str:
         "capacity_gb": spec.capacity_gb,
         "colour": spec.colour,
         "edition": spec.edition,
+        "part_number": spec.part_number,
     }
     evaluator = Evaluator(tokenise(generated_expression()), row)
     value = evaluator.expression()
@@ -251,7 +252,7 @@ def test_the_evaluator_is_actually_reading_the_migration():
 
     assert "ean" in expression
     assert "description_key" in expression
-    for column in ("capacity_gb", "colour", "edition"):
+    for column in ("capacity_gb", "colour", "edition", "part_number"):
         assert column in expression, f"{column} is part of identity in Python but not in SQL"
 
 
@@ -263,6 +264,7 @@ def test_a_drifted_migration_is_caught():
     row = {
         "ean": spec.ean, "brand": spec.brand, "description_key": spec.description_key,
         "capacity_gb": spec.capacity_gb, "colour": spec.colour, "edition": spec.edition,
+        "part_number": spec.part_number,
     }
     key = Evaluator(tokenise(drifted), row).expression()
 

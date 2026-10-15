@@ -69,6 +69,10 @@ class TableRow:
     # all four. Normalising here would mean a second, worse copy of that.
     capacity: str | None = None
     ram: str | None = None
+    # The same string as `code` when the header named a manufacturer part number, and
+    # None when it named the seller's own article number. Kept apart because only one
+    # of the two qualifies identity.
+    part_number: str | None = None
     quantity: int | None = None
     price: float | None = None
     currency: str | None = None
@@ -284,6 +288,7 @@ def _build_row(
             or (detect_category(f"{brand} {description}") if brand else None)
         ),
         code=cell("code") or None,
+        part_number=(cell("code") or None) if column_map.code_is_part_number else None,
         section=section,
         source_ref=f"{source} row {line_number}",
         warnings=warnings,

@@ -136,6 +136,52 @@ def test_a_description_containing_the_word_ram_is_not_a_header():
     assert "ram" not in table.column_map.columns
 
 
+@pytest.mark.parametrize(
+    ("header", "is_part_number"),
+    [
+        ("Part Number", True),
+        ("Part number", True),
+        ("P/N", True),
+        ("Partcode", True),
+        ("MPN", True),
+        ("SKU/EAN", True),
+        ("Code", True),
+        ("Artikelnummer", False),
+        ("ArtNr", False),
+        ("Ref", False),
+        ("Reference", False),
+    ],
+)
+def test_a_part_number_is_told_apart_from_a_sellers_article_number(header, is_part_number):
+    """Only one of the two names a product. An Apple Watch list prices MF8J4MP/A at 355
+    and MF8J4WF/A at 432 under one product name, so the part number has to count for
+    identity or the dearer row is dropped. A seller's 'Artikelnummer' column lists the
+    same case twice at the same price under two of their own numbers, so counting that
+    would split 19 rows that belong together. Both are still stored as `code`."""
+    mapped = map_columns([header, "Description", "Qty", "Price"])
+
+    assert mapped.columns["code"] == 0
+    assert mapped.code_is_part_number is is_part_number
+
+
+def test_only_a_part_number_reaches_the_row():
+    grid = [
+        ["Part Number", "Product Name", "Stock", "Price"],
+        ["MF8J4MP/A", "Watch Series 11 42mm Silver", "12", "355"],
+    ]
+    row = parse_grid(Grid(rows=grid, source="apple")).rows[0]
+    assert row.code == "MF8J4MP/A"
+    assert row.part_number == "MF8J4MP/A"
+
+    grid = [
+        ["Artikelnummer", "Produkt", "Bestand", "Preis"],
+        ["A009571", "iPhone 15 Plus Silicone Case Black", "40", "12.90"],
+    ]
+    row = parse_grid(Grid(rows=grid, source="metropolitan")).rows[0]
+    assert row.code == "A009571"
+    assert row.part_number is None
+
+
 def test_leftmost_quantity_wins():
     """'Ready' and 'Incoming' are both quantities; stock on hand is the one that can
     be sold today."""

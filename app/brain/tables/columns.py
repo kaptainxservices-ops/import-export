@@ -97,6 +97,26 @@ _ONLY_IN_A_SHORT_CELL = frozenset(
     {"ram", "rom", "memory", "memoria", "storage", "speicher", "geheugen", "opslag"}
 )
 
+# A manufacturer's part number names a product globally, the way an EAN does, and
+# belongs in identity: one Apple Watch list carries MF8J4MP/A at 355 and MF8J4WF/A at
+# 432 under one product name, and without the code they are a single identity and the
+# dearer one is dropped.
+#
+# A seller's own article number does not. Metropolitan's 'Artikelnummer' column lists
+# the same case twice, at the same price, under A009571 and A010679 — two lines in
+# their catalogue, one lot of stock. Treating that as identity splits 19 rows that
+# should stay merged.
+#
+# Both land in `code`, because both are worth storing and showing. Only the first
+# qualifies identity, and the header is what tells them apart.
+_SELLERS_OWN_CODE = frozenset(
+    {
+        "artikelnummer", "artnr", "art nr", "artikel nr", "artikel", "article number",
+        "ref", "reference", "our ref", "internal", "internal code", "item no",
+        "item number", "kod",
+    }
+)
+
 _PUNCT = re.compile(r"[^\w\s€$£]", re.UNICODE)
 
 
@@ -107,6 +127,10 @@ class ColumnMap:
     columns: dict[str, int] = field(default_factory=dict)
     header_row: int = 0
     currency: str | None = None
+    # Whether the `code` column holds a manufacturer part number rather than the
+    # seller's own article number. Only the former qualifies identity; see
+    # `_SELLERS_OWN_CODE`.
+    code_is_part_number: bool = False
 
     def get(self, field_name: str) -> int | None:
         return self.columns.get(field_name)
@@ -200,11 +224,14 @@ def map_columns(header: list[str]) -> ColumnMap:
     """
     columns: dict[str, int] = {}
     currency: str | None = None
+    code_is_part_number = False
 
     for index, cell in enumerate(header):
         field_name = classify_header_cell(cell)
         if field_name and field_name not in columns:
             columns[field_name] = index
+            if field_name == "code":
+                code_is_part_number = normalise_header(cell) not in _SELLERS_OWN_CODE
 
         if currency is None and cell:
             normalised = normalise_header(cell)
@@ -216,7 +243,9 @@ def map_columns(header: list[str]) -> ColumnMap:
                         currency = code
                         break
 
-    return ColumnMap(columns=columns, currency=currency)
+    return ColumnMap(
+        columns=columns, currency=currency, code_is_part_number=code_is_part_number
+    )
 
 
 def looks_like_header(row: list[str], minimum: int = 2) -> bool:
