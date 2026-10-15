@@ -20,13 +20,29 @@ against your Gmail, and all six collapse into a single counterparty.
 So add the test address to the tenant's own addresses first:
 
 ```sql
-update tenants
-set own_addresses = array_append(own_addresses, 'kaptainx.services@gmail.com')
-where id = 'b9316981-b732-4891-854f-3335205dd582';
+-- Check what is there now, and confirm the tenant id is the right one.
+select id, name, internal_domains, internal_addresses from public.tenants;
+
+-- Add the test sender. `array_append` is a no-op guard against running it twice
+-- only if you check first, so this uses a filter instead.
+update public.tenants
+set internal_addresses = internal_addresses || array['kaptainx.services@gmail.com']
+where id = 'b9316981-b732-4891-854f-3335205dd582'
+  and not ('kaptainx.services@gmail.com' = any(internal_addresses));
 ```
+
+The column is `internal_addresses` on `public.tenants`. `own_addresses` is a local
+variable inside `supabase/setup_tenant.sql` and is not a column — a query against that
+name fails with `column "own_addresses" does not exist`.
 
 **Take it out again when the test is finished.** Leaving it in means a real email from
 that address would be treated as internal mail rather than as a supplier.
+
+```sql
+update public.tenants
+set internal_addresses = array_remove(internal_addresses, 'kaptainx.services@gmail.com')
+where id = 'b9316981-b732-4891-854f-3335205dd582';
+```
 
 The three files are in `samples/stress/`. Attach them from there.
 
