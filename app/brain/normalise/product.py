@@ -114,21 +114,37 @@ class ProductSpec:
     warnings: list[str] = field(default_factory=list)
 
     def identity_key(self) -> str:
-        """EAN when present, otherwise brand + normalised description + capacity + colour.
+        """EAN when present, otherwise brand + normalised description, and in both cases
+        the fields that tell two lots of the same model apart.
 
-        The EAN branch is exact. The fallback is best-effort and is why colour is never
-        nulled when unrecognised: dropping it would merge two different lots.
+        The barcode is exact identity only when the supplier used it correctly, and a
+        good many do not: one list has a Galaxy Tab S10 Lite in Gray and in Silver, at
+        different prices, under one EAN, and another has Buds4 DE and EU stock sharing
+        one. Keyed on the barcode alone those pairs are a single identity, so
+        reconciliation keeps the first and drops the second — a real offer, gone.
+
+        So capacity, colour and edition qualify the EAN too. They are the supplier's own
+        structured answer about what the row is, and when they disagree the rows are
+        different stock whatever the barcode says. Grade and region stay out, here as in
+        the fallback: they describe the condition of a lot rather than name a product.
+
+        Matching does not go through this key — it compares the `ean` column directly —
+        so a US supplier's UPC still meets a European EAN for the same handset.
         """
-        if self.ean:
-            return f"ean:{self.ean}"
+        qualifiers = "|".join(
+            [
+                str(self.capacity_gb or ""),
+                (self.colour or "").lower(),
+                (self.edition or "").lower(),
+            ]
+        )
 
-        parts = [
-            (self.brand or "").lower(),
-            self.description_key,
-            str(self.capacity_gb or ""),
-            (self.colour or "").lower(),
-        ]
-        return "spec:" + "|".join(parts)
+        if self.ean:
+            return f"ean:{self.ean}|{qualifiers}"
+
+        return "spec:" + "|".join(
+            [(self.brand or "").lower(), self.description_key, qualifiers]
+        )
 
 
 def parse_product(
@@ -179,7 +195,7 @@ def parse_product(
         region_code=normalise_region_code(raw),
         network=network_match.group(1).upper() if network_match else None,
         dual_sim=True if _DUAL_SIM.search(raw) else None,
-        edition="Enterprise Edition" if _EDITION.search(raw) else None,
+        edition=_edition(raw),
         description=raw,
         description_key=build_description_key(raw),
         match_key=build_match_key(raw),
@@ -383,6 +399,21 @@ def _parse_ram_and_capacity(raw: str) -> tuple[int | None, int | None, str | Non
         return ram_named, None, f"implausible capacity {implausible}"
 
     return ram_named, None, None
+
+
+def _edition(raw: str) -> str | None:
+    """Enterprise and open-market stock are different lots at different prices.
+
+    Both were already kept apart inside `description_key`, which is enough while
+    identity falls back to the spec. It is not enough when the row carries an EAN —
+    suppliers put the base model's barcode on both lines — so the distinction has to
+    exist as a field of its own for `identity_key` to use.
+    """
+    if _EDITION.search(raw):
+        return "Enterprise Edition"
+    if _OPEN_MARKET.search(raw):
+        return "Open Market"
+    return None
 
 
 def _parse_columns(

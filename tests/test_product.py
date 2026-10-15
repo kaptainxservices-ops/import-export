@@ -436,9 +436,46 @@ def test_excel_apostrophe_prefix_is_stripped():
 
 
 def test_identity_uses_ean_when_present():
+    """Two spellings of one product, unified by the barcode. The point of the EAN
+    branch: neither description_key nor brand gets a say when a barcode is present."""
     a = parse_product("APPLE IPHONE 17 256GB WHITE", ean="0195950643701")
     b = parse_product("Apple iPhone 17 White 256 GB", ean="0195950643701")
-    assert a.identity_key() == b.identity_key() == "ean:0195950643701"
+
+    assert a.identity_key() == b.identity_key()
+    assert a.identity_key().startswith("ean:0195950643701")
+
+
+def test_one_ean_over_two_colours_is_two_products():
+    """A real list has a Galaxy Tab S10 Lite in Gray and in Silver, at 249 and 245,
+    under one barcode. Keyed on the barcode alone they are one identity, so
+    reconciliation keeps the first and drops the second — and a real offer, at a real
+    price, never reaches the board."""
+    gray = parse_product('Galaxy Tab S10 Lite 10.9" 128GB/Gray WiFi', ean="8806097728955")
+    silver = parse_product('Galaxy Tab S10 Lite 10.9" 128GB/Silver WiFi', ean="8806097728955")
+
+    assert gray.identity_key() != silver.identity_key()
+
+
+def test_one_ean_over_two_editions_is_two_products():
+    """Suppliers put the base model's barcode on both the Enterprise Edition line and
+    the open-market one, consecutively, at different prices. The description_key keeps
+    them apart; before this the EAN branch skipped straight past that."""
+    enterprise = parse_product("Samsung A56 5G Ent. Ed. 8+128", ean="8806095558792")
+    open_market = parse_product("Samsung A56 5G OM 8+128", ean="8806095558792")
+
+    assert enterprise.edition == "Enterprise Edition"
+    assert open_market.edition == "Open Market"
+    assert enterprise.identity_key() != open_market.identity_key()
+
+
+def test_grade_is_still_not_identity():
+    """Deliberate, and unchanged by the above. A grade describes the condition of a lot
+    rather than naming a product, and two graded lots of one handset are the same row
+    with a quality note — not two rows."""
+    a_plus = parse_product("Apple iPhone 15 128GB Blue A/A+", ean="0195949035999")
+    b_grade = parse_product("Apple iPhone 15 128GB Blue B grade", ean="0195949035999")
+
+    assert a_plus.identity_key() == b_grade.identity_key()
 
 
 def test_identity_falls_back_to_spec_without_an_ean():

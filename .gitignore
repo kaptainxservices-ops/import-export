@@ -9,6 +9,12 @@
 samples/**
 !samples/README.md
 
+# The one exception: the stress-test files are invented from end to end — fictional
+# companies, .example domains, made-up EANs — and they are what the pipeline is checked
+# against, so they belong in the repository. Nothing from a real supplier goes in here.
+!samples/stress/
+!samples/stress/**
+
 # Python
 __pycache__/
 *.py[cod]
