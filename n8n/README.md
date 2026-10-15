@@ -7,11 +7,12 @@ through the same pipeline the samples did.
 `imap-to-ingest.json` is the workflow. Import it, connect five IMAP credentials, set
 three environment variables, activate.
 
-## Five collectors, one workflow
+## One collector per staff mailbox
 
-The client has five staff mailboxes on mixed providers — `info@`, `sales@` and `sales1@`
-on `tvdservices.com`, plus `tvdlogistics@outlook.com` and `tvdservices@hotmail.com`.
-Each one **forwards into its own collector Gmail**, and n8n watches all five.
+The client's staff are on mixed providers — `info@`, `sales@` and `sales1@` on
+`tvdservices.com`, plus `tvdlogistics@outlook.com` and `tvdservices@hotmail.com`, and a
+sixth still to be named. Each one **forwards into its own collector Gmail**, and n8n
+watches all of them.
 
 One collector for everything would have been less work to set up and was the original
 plan. It is the wrong shape: whoever can open that mailbox can read every email any of
@@ -19,10 +20,23 @@ the five staff ever received, including the ones that have nothing to do with th
 One collector per staff mailbox keeps that blast radius to a single person's forwarded
 mail, and the forwarding owner is the only one who needs its password.
 
-The workflow cost of five is close to nothing. Each collector is its own trigger node
-with its own credential, and all five feed the same **Build the payload** — that node
-reads `$input.all()` and never names its trigger, so there is still exactly one copy of
-the logic to maintain, test and change.
+The workflow cost is close to nothing however many there are. Each collector is its own
+trigger node with its own credential, and they all feed the same **Build the payload** —
+that node reads `$input.all()` and never names its trigger, so there is exactly one copy
+of the logic to maintain, test and change.
+
+The count has moved from one to five to six, so the trigger nodes are **generated, not
+hand-edited**. `MAILBOXES` in `build_workflow.py` is the list; the JSON is the output:
+
+```bash
+python n8n/build_workflow.py
+```
+
+It rewrites only the IMAP triggers and their connections, leaves everything downstream
+exactly as it found it, and is safe to re-run over a workflow you have exported from
+n8n. Adding a collector by copying a node in the editor instead is how two triggers end
+up sharing one credential — which looks healthy and quietly means one mailbox is watched
+twice and another never.
 
 ### Why IMAP at all, rather than a Gmail or Outlook API
 
@@ -126,10 +140,10 @@ further and refuses any cut that would remove more prices than it keeps.
 
 ## Setup
 
-### 1. The five collector mailboxes
+### 1. The collector mailboxes
 
 A dedicated Gmail per staff mailbox, none of them read by hand. Repeat all of this on
-each of the five:
+each one:
 
 1. **2-Step Verification on** — app passwords are not offered without it.
 2. **App password**: Google Account → Security → 2-Step Verification → App passwords.
@@ -152,6 +166,7 @@ assume this mapping:
 | `Collector: sales1` | `sales1@tvdservices.com` |
 | `Collector: logistics` | `tvdlogistics@outlook.com` |
 | `Collector: hotmail` | `tvdservices@hotmail.com` |
+| `Collector: spare` | **not yet named** — rename the slug in `build_workflow.py`, re-run, rename the credential to match |
 
 ### 2. Somewhere to run n8n
 
@@ -210,9 +225,9 @@ mail against nothing and leaving a row of green ticks that moved no stock.
 
 **Workflows → Import from File** → `n8n/imap-to-ingest.json`.
 
-That gives you five trigger nodes down the left, all wired into **Build the payload**.
-Each needs its own credential. Open the first, **Collector: info** → **Credential to
-connect with** → **Create new**:
+That gives you a trigger node per collector down the left, all wired into **Build the
+payload**. Each needs its own credential. Open the first, **Collector: info** →
+**Credential to connect with** → **Create new**:
 
 | Field | Value |
 | --- | --- |
@@ -223,9 +238,9 @@ connect with** → **Create new**:
 | SSL/TLS | on |
 
 Name it `Collector info (IMAP)` so it is obvious which mailbox it opens, then repeat for
-the other four. **Do not reuse one credential across nodes** — each holds a different
-address and a different app password, and sharing one would quietly mean five nodes all
-watching the same mailbox.
+the rest. **Do not reuse one credential across nodes** — each holds a different address
+and a different app password, and sharing one would quietly mean several nodes all
+watching the same mailbox while the others are never read.
 
 If only some collectors exist yet, delete the trigger nodes you have no mailbox for.
 A trigger with an unconfigured credential fails on activation and takes the workflow
@@ -238,7 +253,7 @@ Forward a real supplier email into one collector, then press **Execute workflow*
 visible.
 
 **Execute workflow** with several triggers asks which one to run. Pick the collector you
-just forwarded to. Test each of the five at least once before activating: a wrong app
+just forwarded to. Test every collector at least once before activating: a wrong app
 password shows up here as a clear authentication error, and after activation it shows up
 as that one mailbox silently never delivering.
 
@@ -264,8 +279,8 @@ Toggle **Active**.
 Set one under **Settings → Error Workflow** — anything that reaches you. A dead inbox
 looks exactly like a quiet trading day, and the trade has plenty of quiet days.
 
-This matters more with five triggers than it did with one. A single bad credential takes
-down only its own mailbox, and the other four keep delivering, so the workflow still
+This matters more with several triggers than it did with one. A single bad credential
+takes down only its own mailbox, and the rest keep delivering, so the workflow still
 looks healthy and the board still updates — while one staff member's suppliers quietly
 stop appearing. Nothing about that is visible from the dashboard.
 
