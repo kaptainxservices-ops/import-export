@@ -4,16 +4,29 @@ Everything so far has been fed by `scripts/load_samples.py`, run by hand. This i
 part that makes it live: a mailbox is watched, and every message that arrives goes
 through the same pipeline the samples did.
 
-`imap-to-ingest.json` is the workflow. Import it, connect one IMAP credential, set three
-environment variables, activate.
+`imap-to-ingest.json` is the workflow. Import it, connect five IMAP credentials, set
+three environment variables, activate.
 
-## One collector mailbox, not five
+## Five collectors, one workflow
 
-The client has five staff on mixed providers — `info@`, `sales@` and `sales1@` on
-`tvdservices.com`, plus `tvdlogistics@outlook.com`. They all **forward into a single
-collector mailbox**, and n8n watches only that one.
+The client has five staff mailboxes on mixed providers — `info@`, `sales@` and `sales1@`
+on `tvdservices.com`, plus `tvdlogistics@outlook.com` and `tvdservices@hotmail.com`.
+Each one **forwards into its own collector Gmail**, and n8n watches all five.
 
-This is not laziness, it is the only tractable option:
+One collector for everything would have been less work to set up and was the original
+plan. It is the wrong shape: whoever can open that mailbox can read every email any of
+the five staff ever received, including the ones that have nothing to do with the trade.
+One collector per staff mailbox keeps that blast radius to a single person's forwarded
+mail, and the forwarding owner is the only one who needs its password.
+
+The workflow cost of five is close to nothing. Each collector is its own trigger node
+with its own credential, and all five feed the same **Build the payload** — that node
+reads `$input.all()` and never names its trigger, so there is still exactly one copy of
+the logic to maintain, test and change.
+
+### Why IMAP at all, rather than a Gmail or Outlook API
+
+Not laziness — the alternatives are worse than they look:
 
 - **Basic authentication for IMAP and POP is already disabled in every Exchange Online
   tenant**, and Microsoft support cannot re-enable it. App passwords died with it, and
@@ -26,8 +39,14 @@ This is not laziness, it is the only tractable option:
   Testing mode, its refresh token expires every 7 days, so you would re-authorise five
   mailboxes every week forever.
 
-Five mailboxes, two providers, two app registrations, permanent token maintenance —
-versus one app password that does not expire. Hence the collector.
+Two providers, two app registrations and permanent token maintenance — versus an app
+password per collector that does not expire. Hence collectors, and hence IMAP.
+
+Gmail's app passwords are still the supported route for IMAP: the September 2024
+shutdown ended plain-password access, not app passwords, and the January 2026
+deprecation is POP, not IMAP. Google removed the enable/disable IMAP toggle in January
+2025, so IMAP is simply always on for a personal account now — there is nothing to
+switch.
 
 ### Forward, or redirect?
 
@@ -107,18 +126,32 @@ further and refuses any cut that would remove more prices than it keeps.
 
 ## Setup
 
-### 1. The collector mailbox
+### 1. The five collector mailboxes
 
-A dedicated Gmail nobody reads by hand. On that account:
+A dedicated Gmail per staff mailbox, none of them read by hand. Repeat all of this on
+each of the five:
 
 1. **2-Step Verification on** — app passwords are not offered without it.
-2. **Settings → Forwarding and POP/IMAP → Enable IMAP.**
-3. **App password**: Google Account → Security → 2-Step Verification → App passwords.
-   Sixteen characters. This is the only mail credential the system ever holds.
-4. **A filter so nothing is ever marked spam.** Forwarding breaks SPF, so forwarded
+2. **App password**: Google Account → Security → 2-Step Verification → App passwords.
+   Sixteen characters, shown once. These are the only mail credentials the system ever
+   holds, and each collector needs its own.
+3. **A filter so nothing is ever marked spam.** Forwarding breaks SPF, so forwarded
    supplier mail can land in Spam — and the IMAP trigger reads `INBOX` only, so anything
-   filtered is silently lost. Filter: `from:(*)` → *Never send it to Spam*, or match the
-   five forwarding addresses.
+   filtered is silently lost. Filter: `from:(*)` → *Never send it to Spam*.
+
+There is no step for enabling IMAP. Google removed that toggle in January 2025 and IMAP
+is always on for personal accounts.
+
+Keep a note of which collector receives which staff mailbox. The workflow's node names
+assume this mapping:
+
+| Trigger node | Forwarded from |
+| --- | --- |
+| `Collector: info` | `info@tvdservices.com` |
+| `Collector: sales` | `sales@tvdservices.com` |
+| `Collector: sales1` | `sales1@tvdservices.com` |
+| `Collector: logistics` | `tvdlogistics@outlook.com` |
+| `Collector: hotmail` | `tvdservices@hotmail.com` |
 
 ### 2. Somewhere to run n8n
 
@@ -177,22 +210,37 @@ mail against nothing and leaving a row of green ticks that moved no stock.
 
 **Workflows → Import from File** → `n8n/imap-to-ingest.json`.
 
-Then open **Watch the collector mailbox** → **Credential to connect with** → **Create
-new**:
+That gives you five trigger nodes down the left, all wired into **Build the payload**.
+Each needs its own credential. Open the first, **Collector: info** → **Credential to
+connect with** → **Create new**:
 
 | Field | Value |
 | --- | --- |
-| User | the collector address |
-| Password | the 16-character app password, not the account password |
+| User | that collector's Gmail address |
+| Password | that collector's 16-character app password, not the account password |
 | Host | `imap.gmail.com` |
 | Port | `993` |
 | SSL/TLS | on |
 
+Name it `Collector info (IMAP)` so it is obvious which mailbox it opens, then repeat for
+the other four. **Do not reuse one credential across nodes** — each holds a different
+address and a different app password, and sharing one would quietly mean five nodes all
+watching the same mailbox.
+
+If only some collectors exist yet, delete the trigger nodes you have no mailbox for.
+A trigger with an unconfigured credential fails on activation and takes the workflow
+down with it, so an absent collector is better removed than left half-connected.
+
 ### 5. Test before activating
 
-Forward a real supplier email into the collector, then press **Execute workflow** — not
+Forward a real supplier email into one collector, then press **Execute workflow** — not
 **Activate**. That runs it once over the unread mail with every node's input and output
 visible.
+
+**Execute workflow** with several triggers asks which one to run. Pick the collector you
+just forwarded to. Test each of the five at least once before activating: a wrong app
+password shows up here as a clear authentication error, and after activation it shows up
+as that one mailbox silently never delivering.
 
 Look at **POST /ingest**. Its reply is the backend saying what it did:
 
@@ -215,6 +263,11 @@ Toggle **Active**.
 
 Set one under **Settings → Error Workflow** — anything that reaches you. A dead inbox
 looks exactly like a quiet trading day, and the trade has plenty of quiet days.
+
+This matters more with five triggers than it did with one. A single bad credential takes
+down only its own mailbox, and the other four keep delivering, so the workflow still
+looks healthy and the board still updates — while one staff member's suppliers quietly
+stop appearing. Nothing about that is visible from the dashboard.
 
 ## Things that will come up
 
