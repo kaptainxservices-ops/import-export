@@ -69,6 +69,9 @@ class StoredImport:
     approved_at: datetime | None = None
     rejected_at: datetime | None = None
     reviewed_by: str | None = None
+    # Set when a held import is settled, and by which of the three answers.
+    resolved_at: datetime | None = None
+    resolution: str | None = None
 
 
 @dataclass
@@ -320,6 +323,58 @@ class InMemoryRepository:
                 offer.last_confirmed_at = now
                 touched += 1
         return touched
+
+    def list_held_imports(self, tenant_id: str, limit: int = 50) -> list[dict]:
+        out = []
+        for stored in reversed(self.imports):
+            if (
+                stored.record.tenant_id == tenant_id
+                and stored.record.status == "held_for_review"
+                and stored.resolved_at is None
+            ):
+                out.append(self._held_summary(stored))
+            if len(out) >= limit:
+                break
+        return out
+
+    def get_held_import(self, tenant_id: str, import_id: str) -> dict | None:
+        for stored in self.imports:
+            if stored.id == import_id and stored.record.tenant_id == tenant_id:
+                summary = self._held_summary(stored)
+                summary["rows"] = self.held_rows.get(import_id, [])
+                return summary
+        return None
+
+    def _held_summary(self, stored) -> dict:
+        record = stored.record
+        return {
+            "id": stored.id,
+            "counterparty_id": record.counterparty_id,
+            "email_id": record.email_id,
+            "side": record.side,
+            "row_count": record.row_count,
+            "difference_summary": record.difference_summary,
+            "notes": record.notes,
+            "created_at": stored.created_at,
+            "resolved_at": stored.resolved_at,
+            "resolution": stored.resolution,
+        }
+
+    def mark_import_resolved(
+        self, tenant_id: str, import_id: str, resolution: str, user_id: str | None
+    ) -> bool:
+        for stored in self.imports:
+            if (
+                stored.id == import_id
+                and stored.record.tenant_id == tenant_id
+                and stored.record.status == "held_for_review"
+                and stored.resolved_at is None
+            ):
+                stored.resolved_at = datetime.utcnow()
+                stored.resolution = resolution
+                stored.reviewed_by = user_id
+                return True
+        return False
 
     def record_usage(self, events: list[UsageEvent]) -> None:
         self.usage.extend(events)

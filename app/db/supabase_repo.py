@@ -570,6 +570,72 @@ class SupabaseRepository:
             touched += len(result.data or [])
         return touched
 
+    def list_held_imports(self, tenant_id: str, limit: int = 50) -> list[dict]:
+        return (
+            self.client.table("imports")
+            .select(
+                "id,counterparty_id,email_id,side,row_count,difference_summary,notes,"
+                "created_at,resolved_at,resolution,counterparties(name,primary_email)"
+            )
+            .eq("tenant_id", tenant_id)
+            .eq("status", "held_for_review")
+            .is_("resolved_at", "null")
+            .order("created_at", desc=True)
+            .limit(limit)
+            .execute()
+        ).data or []
+
+    def get_held_import(self, tenant_id: str, import_id: str) -> dict | None:
+        rows = (
+            self.client.table("imports")
+            .select(
+                "id,counterparty_id,email_id,side,row_count,difference_summary,notes,"
+                "created_at,resolved_at,resolution,status,"
+                "counterparties(name,primary_email)"
+            )
+            .eq("tenant_id", tenant_id)
+            .eq("id", import_id)
+            .limit(1)
+            .execute()
+        ).data
+        if not rows:
+            return None
+
+        record = rows[0]
+        record["rows"] = _all_rows(
+            lambda: self.client.table("held_rows")
+            .select("*")
+            .eq("tenant_id", tenant_id)
+            .eq("import_id", import_id)
+        )
+        return record
+
+    def mark_import_resolved(
+        self, tenant_id: str, import_id: str, resolution: str, user_id: str | None
+    ) -> bool:
+        """Settle a held import, once.
+
+        Filtered on `resolved_at is null` so a second click cannot apply a list twice —
+        two people on the same queue, or one person on a slow connection, is the
+        ordinary way that happens.
+        """
+        result = (
+            self.client.table("imports")
+            .update(
+                {
+                    "resolved_at": datetime.now(timezone.utc).isoformat(),  # noqa: UP017
+                    "resolved_by": user_id,
+                    "resolution": resolution,
+                }
+            )
+            .eq("tenant_id", tenant_id)
+            .eq("id", import_id)
+            .eq("status", "held_for_review")
+            .is_("resolved_at", "null")
+            .execute()
+        )
+        return bool(result.data)
+
     def record_usage(self, events: list[UsageEvent]) -> None:
         """Write the model spend. Swallows its own failures on purpose.
 

@@ -21,6 +21,8 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel, Field, model_validator
 
 from app.api.deps import current_caller, current_tenant
+from app.brain.listdiff import compare
+from app.brain.resolve import RESOLUTIONS, settle
 from app.brain.verdict import judge_import
 from app.pipeline import reprocess_email
 
@@ -415,3 +417,269 @@ def fix_row(offer_id: str, payload: FixRowIn, context=Depends(current_tenant)) -
 
     log.info("row %s corrected on tenant %s: %s", offer_id, tenant_id, sorted(changes))
     return FixedOut(fixed=True, offer_id=offer_id)
+
+
+# ---------------------------------------------------------------- held lists
+#
+# A supplier's second list of the day is parsed and then stopped, because reconciliation
+# reads a list as their complete current stock and that is only true of the first one.
+# These three endpoints are how a person tells it what the second one meant.
+
+
+class HeldChangeOut(BaseModel):
+    kind: str = Field(
+        description="appeared | vanished | price | quantity | unchanged. 'vanished' is "
+        "on the board and absent here — during an ordinary reconcile that would close "
+        "it as sold, which is exactly the inference being withheld."
+    )
+    identity_key: str
+    description: str = ""
+
+    quantity: int | None = None
+    unit_price: float | None = None
+    currency: str | None = None
+
+    previous_quantity: int | None = None
+    previous_price: float | None = None
+    price_move: float | None = Field(
+        default=None,
+        description="Fractional price change. 0.018 is a reprice; 0.4 is usually a "
+        "parse error wearing a reprice's clothes.",
+    )
+
+
+class HeldImportOut(BaseModel):
+    id: str
+    counterparty_id: str | None = None
+    counterparty_name: str | None = None
+    side: str | None = None
+    row_count: int = 0
+    difference_summary: str | None = None
+    reason: str | None = None
+    created_at: str | None = None
+
+
+class HeldImportsOut(BaseModel):
+    items: list[HeldImportOut]
+    waiting: int = Field(description="How many lists are sitting unanswered.")
+
+
+class HeldDetailOut(HeldImportOut):
+    changes: list[HeldChangeOut]
+    counts: dict[str, int] = Field(
+        description="How many rows of each kind, so the screen can collapse the "
+        "unchanged ones without counting them twice."
+    )
+
+
+class ResolveHeldIn(BaseModel):
+    resolution: str = Field(
+        description="same — nothing here is news, confirm the stock and change nothing. "
+        "new — this IS their current stock, apply it in full, closures included. "
+        "partial — apply only `identity_keys`, and close nothing."
+    )
+    identity_keys: list[str] = Field(
+        default_factory=list,
+        description="Required for 'partial', ignored otherwise. These are the rows "
+        "being vouched for; everything else in the list is left alone.",
+    )
+
+    @model_validator(mode="after")
+    def _check(self):
+        if self.resolution not in RESOLUTIONS:
+            raise ValueError(f"resolution must be one of {', '.join(RESOLUTIONS)}")
+        if self.resolution == "partial" and not self.identity_keys:
+            raise ValueError("'partial' needs at least one identity_key to apply")
+        return self
+
+
+class ResolvedHeldOut(BaseModel):
+    import_id: str
+    resolution: str
+    applied: int = Field(description="Rows written to the board.")
+    refreshed: int = Field(description="Rows marked as seen again, otherwise untouched.")
+    closed: int = Field(
+        description="Rows closed as sold. Only ever non-zero for 'new', which is the "
+        "one answer that states the list is complete."
+    )
+    note: str
+
+
+@router.get(
+    "/held",
+    response_model=HeldImportsOut,
+    summary="Lists waiting for someone to say what they mean",
+)
+def held_imports(
+    limit: int = Query(default=50, ge=1, le=200),
+    context=Depends(current_tenant),
+) -> HeldImportsOut:
+    tenant_id, repository = context
+
+    items = []
+    for row in repository.list_held_imports(tenant_id, limit):
+        counterparty = row.get("counterparties") or {}
+        items.append(
+            HeldImportOut(
+                id=row["id"],
+                counterparty_id=row.get("counterparty_id"),
+                counterparty_name=counterparty.get("name") or counterparty.get(
+                    "primary_email"
+                ),
+                side=row.get("side"),
+                row_count=row.get("row_count") or 0,
+                difference_summary=row.get("difference_summary"),
+                reason=row.get("notes"),
+                created_at=str(row.get("created_at") or ""),
+            )
+        )
+
+    return HeldImportsOut(items=items, waiting=len(items))
+
+
+@router.get(
+    "/held/{import_id}",
+    response_model=HeldDetailOut,
+    summary="What this list would change, row by row",
+)
+def held_import(import_id: str, context=Depends(current_tenant)) -> HeldDetailOut:
+    """The diff a person reads before answering.
+
+    Computed against the board as it stands *now*, not as it stood when the list was
+    held. Hours may have passed and another list may have been applied in between, and
+    showing a stale comparison is how someone approves a change that has already
+    happened.
+    """
+    tenant_id, repository = context
+
+    record = repository.get_held_import(tenant_id, import_id)
+    if record is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "no such held list on this board")
+
+    live = repository.load_live_offers(
+        tenant_id, record["counterparty_id"], record.get("side") or "sell"
+    )
+    diff = compare(live, [_held_as_row(row) for row in record.get("rows", [])])
+    counterparty = record.get("counterparties") or {}
+
+    return HeldDetailOut(
+        id=record["id"],
+        counterparty_id=record.get("counterparty_id"),
+        counterparty_name=counterparty.get("name") or counterparty.get("primary_email"),
+        side=record.get("side"),
+        row_count=record.get("row_count") or 0,
+        difference_summary=record.get("difference_summary"),
+        reason=record.get("notes"),
+        created_at=str(record.get("created_at") or ""),
+        counts=diff.counts,
+        changes=[
+            HeldChangeOut(
+                kind=change.kind,
+                identity_key=change.identity_key,
+                description=change.description,
+                quantity=change.quantity,
+                unit_price=change.unit_price,
+                currency=change.currency,
+                previous_quantity=change.previous_quantity,
+                previous_price=change.previous_price,
+                price_move=change.price_move,
+            )
+            for change in diff.changes
+        ],
+    )
+
+
+@router.post(
+    "/held/{import_id}/resolve",
+    response_model=ResolvedHeldOut,
+    summary="Say what the second list meant",
+)
+def resolve_held(
+    import_id: str, body: ResolveHeldIn, context=Depends(current_caller)
+) -> ResolvedHeldOut:
+    """Apply a person's answer.
+
+    The import is marked resolved FIRST, and the filter on that update is what stops a
+    list being applied twice — two people working the same queue, or one person on a
+    slow connection clicking again. If the mark fails, this list has already been
+    settled and nothing further happens.
+    """
+    tenant_id, user_id, repository = context
+
+    record = repository.get_held_import(tenant_id, import_id)
+    if record is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "no such held list on this board")
+
+    counterparty_id = record.get("counterparty_id")
+    side = record.get("side") or "sell"
+    live = repository.load_live_offers(tenant_id, counterparty_id, side)
+
+    outcome = settle(
+        body.resolution,
+        held=list(record.get("rows", [])),
+        live=live,
+        chosen_keys=body.identity_keys,
+    )
+
+    if not repository.mark_import_resolved(
+        tenant_id, import_id, body.resolution, user_id
+    ):
+        raise HTTPException(
+            status.HTTP_409_CONFLICT, "this list has already been settled"
+        )
+
+    refreshed = 0
+    if outcome.refresh_keys:
+        refreshed = repository.refresh_offers(
+            tenant_id, counterparty_id, side, outcome.refresh_keys
+        )
+
+    if outcome.actions:
+        repository.apply_actions(
+            tenant_id,
+            counterparty_id,
+            record.get("email_id"),
+            side,
+            outcome.actions,
+            {
+                action.identity_key: action.incoming
+                for action in outcome.actions
+                if action.incoming is not None
+            },
+        )
+
+    closed = sum(1 for action in outcome.actions if action.kind == "close")
+    applied = sum(1 for action in outcome.actions if action.kind != "close")
+
+    log.info(
+        "held import %s settled as %s on tenant %s by %s (%s)",
+        import_id, body.resolution, tenant_id, user_id, outcome.note,
+    )
+
+    return ResolvedHeldOut(
+        import_id=import_id,
+        resolution=body.resolution,
+        applied=applied,
+        refreshed=refreshed,
+        closed=closed,
+        note=outcome.note,
+    )
+
+
+class _HeldRow:
+    """A parked row in the shape `compare` reads."""
+
+    __slots__ = ("identity_key", "quantity", "unit_price", "currency", "description")
+
+    def __init__(self, row: dict):
+        self.identity_key = row["identity_key"]
+        self.quantity = row.get("quantity")
+        self.unit_price = (
+            float(row["unit_price"]) if row.get("unit_price") is not None else None
+        )
+        self.currency = row.get("currency")
+        self.description = row.get("description") or ""
+
+
+def _held_as_row(row: dict) -> _HeldRow:
+    return _HeldRow(row)

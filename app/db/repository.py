@@ -116,6 +116,20 @@ class Repository(Protocol):
         """
         ...
 
+    def list_held_imports(self, tenant_id: str, limit: int = 50) -> list[dict]:
+        """Lists waiting for someone to say what they mean. Unresolved only."""
+        ...
+
+    def get_held_import(self, tenant_id: str, import_id: str) -> dict | None:
+        """One held import with its parked rows, for the screen that shows the diff."""
+        ...
+
+    def mark_import_resolved(
+        self, tenant_id: str, import_id: str, resolution: str, user_id: str | None
+    ) -> bool:
+        """Record who settled a held import and how. Returns False if it is not held."""
+        ...
+
     def record_import(self, record: ImportRecord) -> str:
         ...
 
