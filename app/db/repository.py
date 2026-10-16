@@ -17,6 +17,7 @@ from __future__ import annotations
 from typing import Protocol
 
 from app.brain.reconcile import Action, ExistingOffer, IncomingOffer
+from app.brain.sameday import PriorImport
 from app.db.models import (
     Allocation,
     BoardOffer,
@@ -88,6 +89,31 @@ class Repository(Protocol):
         actions: list[Action],
         incoming_by_key: dict[str, IncomingOffer],
     ) -> None:
+        ...
+
+    def last_applied_import(
+        self, tenant_id: str, counterparty_id: str, side: str
+    ) -> PriorImport | None:
+        """The most recent import for this counterparty and side that reached the board.
+
+        Applied, not merely most recent. A list that was held and never resolved changed
+        nothing, so it must not stand in for what the board holds — otherwise the next
+        list is compared against rows nobody ever approved.
+        """
+        ...
+
+    def save_held_rows(self, tenant_id: str, import_id: str, rows: list[dict]) -> int:
+        """Park a parsed list that has not been applied, for a person to decide on."""
+        ...
+
+    def refresh_offers(
+        self, tenant_id: str, counterparty_id: str, side: str, identity_keys: list[str]
+    ) -> int:
+        """Mark rows as seen again without changing a price or a quantity.
+
+        What an unchanged resend means: the supplier has just confirmed this stock is
+        current, so it should not go on ageing as though they had said nothing.
+        """
         ...
 
     def record_import(self, record: ImportRecord) -> str:

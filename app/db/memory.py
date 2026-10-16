@@ -13,6 +13,7 @@ from datetime import datetime, timedelta
 from itertools import count
 
 from app.brain.reconcile import Action, ExistingOffer, IncomingOffer
+from app.brain.sameday import PriorImport
 from app.db.models import (
     CounterpartyConfig,
     EmailRecord,
@@ -48,6 +49,13 @@ class StoredOffer:
     review_reason: str | None = None
     first_seen_at: datetime = field(default_factory=datetime.utcnow)
     last_confirmed_at: datetime = field(default_factory=datetime.utcnow)
+
+
+# An import that reached the board. The flagged ones count: they were applied, they
+# merely refused to close anything, so the board does reflect them.
+_APPLIED_STATUSES = frozenset(
+    {"applied", "flagged_low_row_count", "flagged_partial_list", "flagged_unparseable"}
+)
 
 
 @dataclass
@@ -87,6 +95,9 @@ class InMemoryRepository:
         self.offers: dict[str, StoredOffer] = {}
         self.changes: list[ChangeLogEntry] = []
         self.imports: list[StoredImport] = []
+        # Rows of a list that was parsed but not applied, by import id. Deliberately
+        # not in `self.offers`: everything reading that treats a row as live stock.
+        self.held_rows: dict[str, list[dict]] = {}
         self.usage: list[UsageEvent] = []
         self._ids = count(1)
 
@@ -258,6 +269,57 @@ class InMemoryRepository:
         import_id = self._next("import")
         self.imports.append(StoredImport(id=import_id, record=record))
         return import_id
+
+    def last_applied_import(
+        self, tenant_id: str, counterparty_id: str, side: str
+    ) -> PriorImport | None:
+        """The newest import for this counterparty and side that reached the board.
+
+        Applied only. A held import changed nothing, so letting it answer this would
+        compare tomorrow's list against rows nobody ever approved — and would make the
+        third list of a day look like the second.
+        """
+        applied = [
+            stored
+            for stored in self.imports
+            if stored.record.tenant_id == tenant_id
+            and stored.record.counterparty_id == counterparty_id
+            and stored.record.side == side
+            and stored.record.status in _APPLIED_STATUSES
+        ]
+        if not applied:
+            return None
+
+        newest = max(applied, key=lambda stored: stored.created_at)
+        return PriorImport(
+            id=newest.id,
+            created_at=newest.created_at,
+            content_hash=newest.record.content_hash,
+            row_count=newest.record.row_count,
+        )
+
+    def save_held_rows(self, tenant_id: str, import_id: str, rows: list[dict]) -> int:
+        self.held_rows[import_id] = [dict(row, tenant_id=tenant_id) for row in rows]
+        return len(rows)
+
+    def refresh_offers(
+        self, tenant_id: str, counterparty_id: str, side: str, identity_keys: list[str]
+    ) -> int:
+        """Seen again, unchanged. Touches the timestamp and nothing else."""
+        wanted = set(identity_keys)
+        now = datetime.utcnow()
+        touched = 0
+        for offer in self.offers.values():
+            if (
+                offer.tenant_id == tenant_id
+                and offer.counterparty_id == counterparty_id
+                and offer.side == side
+                and offer.status == "live"
+                and offer.identity_key in wanted
+            ):
+                offer.last_confirmed_at = now
+                touched += 1
+        return touched
 
     def record_usage(self, events: list[UsageEvent]) -> None:
         self.usage.extend(events)

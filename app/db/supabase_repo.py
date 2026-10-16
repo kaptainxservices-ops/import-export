@@ -11,10 +11,12 @@ The logic this implements is all decided elsewhere. This file only reads and wri
 from __future__ import annotations
 
 import logging
+import re
 from datetime import datetime, timezone
 from typing import Any
 
 from app.brain.reconcile import Action, ExistingOffer, IncomingOffer
+from app.brain.sameday import PriorImport
 from app.config import get_settings
 from app.db.models import (
     Allocation,
@@ -108,6 +110,22 @@ def get_client() -> Any:
     return create_client(url, key)
 
 
+# Postgres says 23505 for a unique violation. The Supabase client wraps it in its own
+# exception type whose shape has moved between versions, so this reads the text rather
+# than the class — a misread here costs one retry, a wrong class name costs every
+# concurrent delivery.
+# An import that reached the board. The flagged ones count: they were applied, they
+# merely refused to close anything.
+_APPLIED_STATUSES = frozenset(
+    {"applied", "flagged_low_row_count", "flagged_partial_list", "flagged_unparseable"}
+)
+
+
+def _is_duplicate_key(error: Exception) -> bool:
+    text = f"{getattr(error, 'code', '')} {getattr(error, 'message', '')} {error}".lower()
+    return "23505" in text or "duplicate key" in text or "already exists" in text
+
+
 class SupabaseRepository:
     def __init__(self, client: Any | None = None) -> None:
         self.client = client or get_client()
@@ -192,6 +210,46 @@ class SupabaseRepository:
         return bool(rows)
 
     def save_email(self, record: EmailRecord) -> str:
+        """Store the email, or return the id of the copy that beat us to it.
+
+        Six collectors deliver independently, and one supplier email addressed to two
+        staff arrives twice. `email_already_seen` catches that almost always — but two
+        collectors can poll in the same second, both read 'not seen', and both insert.
+        The unique index on (tenant_id, message_id) then rejects the second, and before
+        this that rejection came back as a 500 from /ingest with the email unprocessed.
+
+        A duplicate is the expected outcome here, not an error, so the loser of the race
+        looks up the winner's row and hands back its id.
+        """
+        try:
+            return self._insert_email(record)
+        except Exception as error:  # the client raises its own type; match on the text
+            if not _is_duplicate_key(error):
+                raise
+
+        existing = (
+            self.client.table("emails")
+            .select("id")
+            .eq("tenant_id", record.tenant_id)
+            .eq("message_id", record.message_id)
+            .limit(1)
+            .execute()
+        ).data
+        if not existing:
+            # Rejected for some other uniqueness reason, or the winner vanished between
+            # the two statements. Either way this is not the case above.
+            raise RuntimeError(
+                f"email insert refused but no row found for message_id={record.message_id!r}"
+            )
+
+        log.info(
+            "email %s already stored by a concurrent delivery on tenant %s",
+            record.message_id,
+            record.tenant_id,
+        )
+        return existing[0]["id"]
+
+    def _insert_email(self, record: EmailRecord) -> str:
         row = (
             self.client.table("emails")
             .insert(
@@ -388,11 +446,129 @@ class SupabaseRepository:
                     "flagged_rows": record.flagged_rows,
                     "parse_warnings": record.parse_warnings,
                     "notes": record.notes,
+                    "side": record.side,
+                    "content_hash": record.content_hash,
+                    "compared_to_import_id": record.compared_to_import_id,
+                    "difference_summary": record.difference_summary,
                 }
             )
             .execute()
         ).data[0]
         return row["id"]
+
+    def last_applied_import(
+        self, tenant_id: str, counterparty_id: str, side: str
+    ) -> PriorImport | None:
+        """The newest import for this counterparty and side that reached the board.
+
+        Applied only, which is the whole point of the filter. A held import changed
+        nothing, so letting it answer this would compare the next list against rows
+        nobody ever approved — and would let the third list of a day be waved through
+        because it happened to match the second.
+
+        The flagged statuses count as applied. They were: closure was refused, but the
+        rows went on, so the board does reflect them.
+        """
+        rows = (
+            self.client.table("imports")
+            .select("id,created_at,content_hash,row_count")
+            .eq("tenant_id", tenant_id)
+            .eq("counterparty_id", counterparty_id)
+            .eq("side", side)
+            .in_("status", sorted(_APPLIED_STATUSES))
+            .order("created_at", desc=True)
+            .limit(1)
+            .execute()
+        ).data
+        if not rows:
+            return None
+
+        row = rows[0]
+        created_at = _parse_timestamp(row.get("created_at"))
+        if created_at is None:
+            # Strict on purpose. `_timestamp` would hand back 'now', which would make
+            # this import look like today's and hold every list from this counterparty
+            # until someone noticed. Treating it as 'no prior list' applies today's
+            # list instead, which is the behaviour before any of this existed.
+            log.warning(
+                "import %s has an unreadable created_at; treating as no prior list",
+                row.get("id"),
+            )
+            return None
+
+        return PriorImport(
+            id=row["id"],
+            created_at=created_at,
+            content_hash=row.get("content_hash"),
+            row_count=row.get("row_count") or 0,
+        )
+
+    def save_held_rows(self, tenant_id: str, import_id: str, rows: list[dict]) -> int:
+        """Park a parsed list that has not been applied.
+
+        Chunked for the same reason the offer writes are: a 2,235-row list in one
+        request is a request that times out, and a held list is exactly as long as the
+        list it was held instead of.
+        """
+        if not rows:
+            return 0
+
+        payload = [
+            {
+                "tenant_id": tenant_id,
+                "import_id": import_id,
+                "identity_key": row["identity_key"],
+                "description": row.get("description"),
+                "quantity": row.get("quantity"),
+                "unit_price": row.get("unit_price"),
+                "currency": row.get("currency"),
+                "fields": row.get("fields") or {},
+                "source_ref": row.get("source_ref"),
+                "action": row.get("action"),
+                "offer_id": row.get("offer_id"),
+                "previous_quantity": row.get("previous_quantity"),
+                "previous_price": row.get("previous_price"),
+            }
+            for row in rows
+        ]
+
+        for start in range(0, len(payload), _PAGE):
+            self.client.table("held_rows").insert(payload[start : start + _PAGE]).execute()
+        return len(payload)
+
+    def refresh_offers(
+        self, tenant_id: str, counterparty_id: str, side: str, identity_keys: list[str]
+    ) -> int:
+        """Seen again, unchanged: touch the timestamp and nothing else.
+
+        What an unchanged resend means. The supplier has just confirmed this stock is
+        current, and leaving it to age would quietly drop live stock off a board sorted
+        by freshness.
+
+        Chunked on the IN list rather than the rows, because a URL carrying 2,235 keys
+        is refused long before the database sees it.
+        """
+        if not identity_keys:
+            return 0
+
+        now = datetime.now(timezone.utc).isoformat()  # noqa: UP017
+        touched = 0
+        unique = sorted(set(identity_keys))
+
+        for start in range(0, len(unique), _PAGE):
+            batch = unique[start : start + _PAGE]
+            result = (
+                self.client.table("offers")
+                .update({"last_confirmed_at": now})
+                .eq("tenant_id", tenant_id)
+                .eq("counterparty_id", counterparty_id)
+                .eq("side", side)
+                .eq("status", "live")
+                .in_("identity_key", batch)
+                .execute()
+            )
+            touched += len(result.data or [])
+        return touched
 
     def record_usage(self, events: list[UsageEvent]) -> None:
         """Write the model spend. Swallows its own failures on purpose.
@@ -1036,14 +1212,64 @@ def _side(classification: str | None) -> str:
     )
 
 
-def _timestamp(raw: str | None) -> datetime:
-    """PostgREST returns ISO 8601 with a 'Z' that fromisoformat rejects before 3.11."""
+# '2026-10-16T09:00:00.123456789+02:00' in three parts.
+_TIMESTAMP = re.compile(
+    r"^(?P<head>\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2})"
+    r"(?:\.(?P<fraction>\d+))?"
+    r"(?P<offset>Z|[+-]\d{2}:?\d{2}|[+-]\d{2})?$"
+)
+
+
+def _parse_timestamp(raw: str | datetime | None) -> datetime | None:
+    """Postgres timestamptz as Python, or None if it genuinely cannot be read.
+
+    Before 3.11 `fromisoformat` accepts exactly three or six fractional digits and no
+    trailing Z, and PostgREST sends whatever precision the column has. This file is run
+    locally on 3.10, so the awkward shapes are handled rather than refused.
+    """
+    if isinstance(raw, datetime):
+        return raw
     if not raw:
-        return datetime.now(timezone.utc)  # noqa: UP017
+        return None
+
+    text = str(raw).strip()
     try:
-        return datetime.fromisoformat(raw.replace("Z", "+00:00"))
+        return datetime.fromisoformat(text.replace("Z", "+00:00"))
     except ValueError:
+        pass
+
+    match = _TIMESTAMP.match(text)
+    if match is None:
+        return None
+
+    fraction = (match.group("fraction") or "0")[:6].ljust(6, "0")
+    offset = match.group("offset") or "+00:00"
+    if offset == "Z":
+        offset = "+00:00"
+    elif len(offset) == 3:          # '+00'   -> '+00:00'
+        offset = f"{offset}:00"
+    elif ":" not in offset:         # '+0000' -> '+00:00'
+        offset = f"{offset[:3]}:{offset[3:]}"
+
+    try:
+        return datetime.fromisoformat(f"{match.group('head')}.{fraction}{offset}")
+    except ValueError:
+        return None
+
+
+def _timestamp(raw: str | None) -> datetime:
+    """As above, falling back to now for the screens that only display it.
+
+    The fallback is why `_parse_timestamp` exists separately. A review card showing the
+    wrong received-at is a cosmetic bug; the same silent 'now' behind the same-day rule
+    would make every prior import look like today's and hold every list a supplier ever
+    sends. Anything deciding something calls the strict one and handles None.
+    """
+    parsed = _parse_timestamp(raw)
+    if parsed is None:
+        log.warning("unreadable timestamp %r; using now", raw)
         return datetime.now(timezone.utc)  # noqa: UP017
+    return parsed
 
 
 def _review_item(row: dict) -> ReviewItem:

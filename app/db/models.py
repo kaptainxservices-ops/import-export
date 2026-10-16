@@ -20,6 +20,11 @@ class TenantConfig:
     internal_domains: set[str] = field(default_factory=set)
     internal_addresses: set[str] = field(default_factory=set)
     staleness_hours: int = 24
+    # Whose day it is. A second list from one supplier is held for review when the first
+    # was applied *today*, and today has to be somewhere: the client's, not the
+    # supplier's. A Dubai supplier sending at 02:00 their time is still sending on the
+    # previous evening in Rotterdam.
+    timezone: str = "Europe/Amsterdam"
 
 
 @dataclass(frozen=True)
@@ -281,3 +286,11 @@ class ImportRecord:
     flagged_rows: int = 0
     parse_warnings: list[str] = field(default_factory=list)
     notes: str = ""
+    # Which side this list was read as, so the same-day hold can tell a supplier's stock
+    # list apart from their buying list — those are two statements, not a resend.
+    side: str | None = None
+    # What the list said, so a second one can be compared against it without reparsing
+    # the first. See app/brain/fingerprint.py.
+    content_hash: str | None = None
+    compared_to_import_id: str | None = None
+    difference_summary: str | None = None

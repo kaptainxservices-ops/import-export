@@ -25,6 +25,7 @@ from app.brain.classify import Classification, classify_side
 from app.brain.companies import find_unique
 from app.brain.completeness import detect_list_completeness
 from app.brain.confidence import score_row
+from app.brain.fingerprint import describe_difference, list_fingerprint
 from app.brain.llm import UsageLog, classify_side_llm, mapper_for
 from app.brain.normalise import (
     ProductSpec,
@@ -34,6 +35,7 @@ from app.brain.normalise import (
 )
 from app.brain.quoting import strip_quoted_history
 from app.brain.reconcile import IncomingOffer, ReconcileResult, reconcile
+from app.brain.sameday import decide
 from app.brain.sender import resolve_sender
 from app.brain.tables import ColumnMapper, parse_grid, read_html_tables, read_spreadsheet
 from app.brain.tables.parser import TableRow
@@ -268,7 +270,7 @@ def process_email(payload: InboundEmail, repo: Repository) -> PipelineResult:
         )
 
     return _extract_and_reconcile(
-        payload, tenant.id, counterparty, classification.side, email_id, repo, usage, written
+        payload, tenant, counterparty, classification.side, email_id, repo, usage, written
     )
 
 
@@ -319,15 +321,19 @@ def reprocess_email(tenant_id: str, email_id: str, repo: Repository) -> Pipeline
         attachments=[Attachment(**a) for a in stored.attachments],
     )
 
+    tenant = repo.get_tenant(tenant_id)
+    if tenant is None:
+        return PipelineResult("unknown_tenant", stored.message_id, notes=["no such tenant"])
+
     usage = UsageLog()
     return _extract_and_reconcile(
-        payload, tenant_id, counterparty, stored.classification, email_id, repo, usage, 0
+        payload, tenant, counterparty, stored.classification, email_id, repo, usage, 0
     )
 
 
 def _extract_and_reconcile(
     payload: InboundEmail,
-    tenant_id: str,
+    tenant,
     counterparty,
     side: str,
     email_id: str | None,
@@ -340,7 +346,12 @@ def _extract_and_reconcile(
     Shared with `reprocess_email` on purpose. A second copy of extraction and
     reconciliation, reached only when a human has intervened, would be the copy nobody
     tests and the one that quietly closes a supplier's stock.
+
+    Takes the tenant rather than its id because the same-day rule below needs the
+    tenant's timezone, and fetching it again here would be a second round trip for
+    something the caller already had in its hand.
     """
+    tenant_id = tenant.id
     # n8n is supposed to have done this already. It is done again because n8n is a GUI
     # the client can edit, and a step that silently stops happening there would show up
     # as last week's prices quietly re-entering the board as this week's. Idempotent: an
@@ -444,6 +455,33 @@ def _extract_and_reconcile(
     previous = repo.previous_row_count(tenant_id, counterparty.id)
     existing = repo.load_live_offers(tenant_id, counterparty.id, side)
 
+    # ---------------------------------------------------------------- a second list?
+    #
+    # Reconciliation reads a list as the supplier's complete current stock, which is
+    # what licences closing everything absent from it. True of the first list of a day;
+    # not true of the second. Half the time an afternoon email is 'here are the 40 I
+    # forgot this morning', and reconciling that closes the other 450.
+    #
+    # The decision is taken BEFORE reconcile() rather than passed into it as a flag. A
+    # held list is never reconciled at all — no actions are computed, so nothing can
+    # reach the board by an oversight downstream.
+    fingerprint = list_fingerprint(incoming)
+    verdict = decide(
+        arriving_at=payload.received_at,
+        content_hash=fingerprint,
+        prior=repo.last_applied_import(tenant_id, counterparty.id, side),
+        tenant_timezone=getattr(tenant, "timezone", "Europe/Amsterdam"),
+    )
+
+    if verdict.verdict != "apply":
+        return _not_applied(
+            payload, tenant_id, counterparty, side, email_id, repo,
+            incoming=incoming, existing=existing, verdict=verdict,
+            fingerprint=fingerprint, previous=previous, is_complete=is_complete,
+            flagged=flagged, parse_warnings=parse_warnings,
+            expanded=expanded, unmapped=unmapped,
+        )
+
     result = reconcile(
         existing,
         incoming,
@@ -478,6 +516,11 @@ def _extract_and_reconcile(
             flagged_rows=flagged,
             parse_warnings=parse_warnings,
             notes="; ".join(result.notes),
+            side=side,
+            # Written on every applied import, because it is what the NEXT list from
+            # this counterparty is compared against. An import without one forces the
+            # next same-day list to be held rather than auto-decided.
+            content_hash=fingerprint,
         )
     )
 
@@ -590,6 +633,135 @@ def _record_usage(
             ]
         )
     return len(usage.calls)
+
+
+def _not_applied(
+    payload: InboundEmail,
+    tenant_id: str,
+    counterparty,
+    side: str,
+    email_id: str | None,
+    repo: Repository,
+    *,
+    incoming: list[IncomingOffer],
+    existing: list,
+    verdict,
+    fingerprint: str,
+    previous: int | None,
+    is_complete: bool | None,
+    flagged: int,
+    parse_warnings: list[str],
+    expanded: int,
+    unmapped: int,
+) -> PipelineResult:
+    """A list that arrived after one was already applied today.
+
+    Two outcomes, and the difference between them is whether a person is needed.
+
+    **Identical.** The rows say exactly what the applied list said. That is what an
+    unchanged resend looks like, and also what a duplicate delivery looks like when
+    Outlook wrapped the forward and gave the copy a new Message-ID. Nobody needs to
+    adjudicate 'is 450 rows the same as these 450 rows' when the fingerprints already
+    agree, so the timestamps are refreshed and the import is recorded as settled.
+
+    The refresh is the part worth stating. Prices and quantities are untouched, but the
+    supplier has just confirmed this stock is current — leaving the rows to age as
+    though the email had never arrived would make live stock look stale and drop it off
+    a board sorted by freshness.
+
+    **Different.** Parsed, stored, and nothing applied. The rows go to `held_rows` and
+    not to `offers`, because everything reading `offers` treats a live row as stock a
+    broker may quote, and a row nobody has approved is not that.
+    """
+    status = "same_as_applied" if verdict.verdict == "same" else "held_for_review"
+    summary = (
+        "identical"
+        if verdict.verdict == "same"
+        else describe_difference(existing, incoming)
+    )
+
+    refreshed = 0
+    if verdict.verdict == "same":
+        refreshed = repo.refresh_offers(
+            tenant_id, counterparty.id, side, [row.identity_key for row in incoming]
+        )
+
+    import_id = repo.record_import(
+        ImportRecord(
+            tenant_id=tenant_id,
+            counterparty_id=counterparty.id,
+            email_id=email_id,
+            row_count=len(incoming),
+            previous_row_count=previous,
+            is_complete_list=is_complete,
+            status=status,
+            # Nothing was inserted, updated or closed, and saying so explicitly is what
+            # makes the import log readable: a held import is visibly a list that did
+            # nothing, not a list whose effect was forgotten.
+            offers_refreshed=refreshed,
+            rows_expanded_from_variants=expanded,
+            flagged_rows=flagged,
+            parse_warnings=parse_warnings,
+            notes=verdict.reason,
+            side=side,
+            content_hash=fingerprint,
+            compared_to_import_id=verdict.compared_to,
+            difference_summary=summary,
+        )
+    )
+
+    if verdict.verdict == "hold":
+        live = {offer.identity_key: offer for offer in existing}
+        repo.save_held_rows(
+            tenant_id,
+            import_id,
+            [_held_row(row, live.get(row.identity_key)) for row in incoming],
+        )
+
+    log.info(
+        "second list today tenant=%s message_id=%s side=%s rows=%d verdict=%s (%s)",
+        tenant_id, payload.message_id, side, len(incoming), verdict.verdict, summary,
+    )
+
+    return PipelineResult(
+        "held_for_review" if verdict.verdict == "hold" else "same_as_applied",
+        payload.message_id,
+        email_id=email_id,
+        counterparty_id=counterparty.id,
+        side=side,
+        row_count=len(incoming),
+        expanded_rows=expanded,
+        tables_needing_mapping=unmapped,
+        notes=[verdict.reason, summary],
+    )
+
+
+def _held_row(row: IncomingOffer, live) -> dict:
+    """One parsed row, plus what it would do to the board if applied.
+
+    Worked out here, while the live offers are already in hand, rather than on every
+    open of the review screen. The screen is the thing a person waits on.
+    """
+    if live is None:
+        action, previous_quantity, previous_price = "insert", None, None
+    elif live.quantity == row.quantity and live.unit_price == row.unit_price:
+        action, previous_quantity, previous_price = "refresh", live.quantity, live.unit_price
+    else:
+        action, previous_quantity, previous_price = "update", live.quantity, live.unit_price
+
+    return {
+        "identity_key": row.identity_key,
+        "description": row.description,
+        "quantity": row.quantity,
+        "unit_price": row.unit_price,
+        "currency": row.currency,
+        "fields": row.fields,
+        "source_ref": row.source_ref,
+        "action": action,
+        "offer_id": getattr(live, "id", None),
+        "previous_quantity": previous_quantity,
+        "previous_price": previous_price,
+    }
 
 
 def _spec(row: TableRow) -> ProductSpec:
