@@ -104,3 +104,48 @@ def test_enums_the_code_writes_literals_into(name, expected):
     """These are written as bare strings rather than through a type, so the only thing
     holding them together is this test."""
     assert expected <= enum_values(name)
+
+
+# ---------------------------------------------------------------- enum values in use
+
+
+def test_no_migration_uses_an_enum_value_it_just_added():
+    """Postgres refuses to use a new enum value in the transaction that created it:
+
+        ERROR: 55P04: unsafe use of new value "held_for_review" of enum type import_status
+        HINT:  New enum values must be committed before they can be used.
+
+    The Supabase SQL editor runs a script as one transaction, so this is not a
+    theoretical rule — it is the error the migration fails with, halfway through, in
+    front of whoever is deploying. It cost one deploy already: an ALTER TYPE ... ADD
+    VALUE and a partial index whose predicate named that value, in one file.
+
+    The fix is always the same shape — the ADD VALUE goes in its own migration, which
+    commits, and the file that uses the value comes after it.
+    """
+    offenders = []
+
+    for path in sorted(MIGRATIONS.glob("*.sql")):
+        text = path.read_text(encoding="utf-8")
+        added = set(re.findall(r"add value\s+'([^']+)'", text, re.IGNORECASE))
+        if not added:
+            continue
+
+        # Everything after the last ADD VALUE in the file. A value used BEFORE it is
+        # added is a different error and one the database would have caught anyway.
+        tail = text[text.lower().rindex("add value"):]
+        # Strip comments: the type's own comment quite properly names its values.
+        body = "\n".join(
+            line for line in tail.splitlines() if not line.lstrip().startswith("--")
+        )
+
+        for value in added:
+            # In a predicate or a comparison, rather than merely mentioned.
+            if re.search(rf"(?<!add value )'{re.escape(value)}'", body):
+                offenders.append(f"{path.name} uses '{value}' after adding it")
+
+    assert not offenders, (
+        "a migration uses an enum value it adds in the same transaction:\n  "
+        + "\n  ".join(offenders)
+        + "\nPut the ADD VALUE in its own migration and use it in the next one."
+    )

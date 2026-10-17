@@ -1,4 +1,8 @@
--- 0013: a second list on the same day waits for a person
+-- 0014: a second list on the same day waits for a person
+--
+-- Run 0013_import_status_held.sql FIRST. It adds the two statuses this file's
+-- index predicate names, and Postgres will not accept a new enum value being used
+-- in the transaction that created it.
 --
 -- Suppliers revise. They send the morning's stock list, sell three lots by lunchtime,
 -- and send it again. Until now the second list was reconciled exactly like the first,
@@ -77,38 +81,6 @@ comment on column public.imports.side is
     'sell or buy, as this list was read. Null on historical rows and on any list whose '
     'side was never settled. The same-day hold is scoped by it, so a null simply never '
     'matches — a supplier''s stock list and their buying list do not hold each other.';
-
-
--- ---------------------------------------------------------------------------
--- What a held import looks like
--- ---------------------------------------------------------------------------
--- Both of these applied NOTHING to the offers table, which is the difference from every
--- status that came before: until now an import was always applied and could only be
--- undone afterwards by rejecting it.
-
-do $$
-begin
-    if not exists (
-        select 1 from pg_enum e join pg_type t on t.oid = e.enumtypid
-        where t.typname = 'import_status' and e.enumlabel = 'held_for_review'
-    ) then
-        alter type public.import_status add value 'held_for_review';
-    end if;
-
-    if not exists (
-        select 1 from pg_enum e join pg_type t on t.oid = e.enumtypid
-        where t.typname = 'import_status' and e.enumlabel = 'same_as_applied'
-    ) then
-        alter type public.import_status add value 'same_as_applied';
-    end if;
-end $$;
-
-comment on type public.import_status is
-    'applied — reconciled onto the board. flagged_* — applied, but closure was refused. '
-    'failed — nothing extracted. held_for_review — a second list the same day, parsed '
-    'and stored, nothing applied, waiting for a person. same_as_applied — a second list '
-    'the same day whose rows were identical, so timestamps were refreshed and nothing '
-    'else touched; decided without asking.';
 
 
 -- ---------------------------------------------------------------------------
