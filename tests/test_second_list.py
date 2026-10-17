@@ -194,6 +194,43 @@ def test_the_day_is_the_clients_day_not_the_suppliers(repo):
     assert result.outcome == "processed"
 
 
+def test_the_day_is_judged_by_the_emails_clock_not_the_rows(repo):
+    """The bug this is named after passed for eleven hours and failed at midnight.
+
+    An arriving email was judged by its `received_at` and the import it was compared
+    against by its `created_at` — when the row was WRITTEN. Those are different clocks.
+    An email that arrives at 23:55 and is processed at 00:10, because n8n polls on an
+    interval or is catching up after an outage, gets recorded as the next day's list,
+    and the revision that follows it is applied straight to the board instead of being
+    held.
+
+    Simulated here by writing the first import with a `created_at` far from the email
+    it came from, which is exactly what an ingestion delay looks like.
+    """
+    # 18:00 and 20:00 UTC are 20:00 and 22:00 in Amsterdam — the same evening, both
+    # safely short of midnight there, so nothing but the write time can separate them.
+    process_email(email(MORNING, message_id="<m1@x>", at=datetime(2026, 10, 16, 18, 0)), repo)
+
+    # The row was written two days later: an extreme backlog, but the direction of the
+    # error is what matters, not its size.
+    repo.imports[0].created_at = datetime(2026, 10, 18, 9, 0)
+
+    result = process_email(
+        email(AFTERNOON_PARTIAL, message_id="<m2@x>", at=datetime(2026, 10, 16, 20, 0)),
+        repo,
+    )
+
+    assert result.outcome == "held_for_review", (
+        "both emails arrived the same evening; only the row's write time says otherwise"
+    )
+
+
+def test_an_import_records_when_its_email_arrived(repo):
+    process_email(email(MORNING, message_id="<m1@x>", at=datetime(2026, 10, 16, 9, 0)), repo)
+
+    assert repo.imports[0].record.source_received_at == datetime(2026, 10, 16, 9, 0)
+
+
 # ---------------------------------------------------------------- scope
 
 

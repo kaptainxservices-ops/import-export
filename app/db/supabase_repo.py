@@ -450,6 +450,11 @@ class SupabaseRepository:
                     "content_hash": record.content_hash,
                     "compared_to_import_id": record.compared_to_import_id,
                     "difference_summary": record.difference_summary,
+                    "source_received_at": (
+                        record.source_received_at.isoformat()
+                        if record.source_received_at
+                        else None
+                    ),
                 }
             )
             .execute()
@@ -471,12 +476,14 @@ class SupabaseRepository:
         """
         rows = (
             self.client.table("imports")
-            .select("id,created_at,content_hash,row_count")
+            .select("id,created_at,source_received_at,content_hash,row_count")
             .eq("tenant_id", tenant_id)
             .eq("counterparty_id", counterparty_id)
             .eq("side", side)
             .in_("status", sorted(_APPLIED_STATUSES))
-            .order("created_at", desc=True)
+            # By the email's clock, not the row's. Rows written before this column
+            # existed have none, and fall back to created_at below.
+            .order("source_received_at", desc=True, nullsfirst=False)
             .limit(1)
             .execute()
         ).data
@@ -484,7 +491,9 @@ class SupabaseRepository:
             return None
 
         row = rows[0]
-        created_at = _parse_timestamp(row.get("created_at"))
+        created_at = _parse_timestamp(
+            row.get("source_received_at") or row.get("created_at")
+        )
         if created_at is None:
             # Strict on purpose. `_timestamp` would hand back 'now', which would make
             # this import look like today's and hold every list from this counterparty

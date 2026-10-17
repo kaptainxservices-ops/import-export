@@ -66,13 +66,20 @@ def client(repo) -> TestClient:
     app.dependency_overrides.clear()
 
 
-def _email(*, message_id="<m1@x>", rows=None, tenant="tenant-1"):
+# A supplier's second list of the SAME day is held for a person instead of reconciled
+# (app/brain/sameday.py), so a test about what a later list does to the board has to
+# arrive on a later day. These two names make that explicit at the call sites below.
+MONDAY = datetime(2026, 8, 7, 9, 0)
+TUESDAY = datetime(2026, 8, 8, 9, 0)
+
+
+def _email(*, message_id="<m1@x>", rows=None, tenant="tenant-1", at=MONDAY):
     return InboundEmail(
         tenant_id=tenant,
         message_id=message_id,
         from_email="sales@supplier.example",
         subject="WTS Price List 07.08.2026",
-        received_at=datetime(2026, 8, 7, 9, 0),
+        received_at=at,
         body_text="Our list attached.",
         attachments=[Attachment(filename="stock.xlsx", kind="table", rows=rows or ROWS)],
     )
@@ -170,7 +177,7 @@ def test_rejecting_puts_back_what_it_displaced(client, repo):
     monday = {o.id for o in repo.offers.values()}
 
     # Tuesday: the same list minus one lot, small enough a drop to be believed.
-    process_email(_email(message_id="<tue@x>", rows=BIG_ROWS[:-1]), repo)
+    process_email(_email(message_id="<tue@x>", rows=BIG_ROWS[:-1], at=TUESDAY), repo)
     closed = [o for o in repo.offers.values() if o.id in monday and o.status == "sold"]
     assert closed, "the second import should have closed the row missing from it"
 

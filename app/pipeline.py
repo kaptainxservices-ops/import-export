@@ -521,6 +521,7 @@ def _extract_and_reconcile(
             # this counterparty is compared against. An import without one forces the
             # next same-day list to be held rather than auto-decided.
             content_hash=fingerprint,
+            source_received_at=payload.received_at,
         )
     )
 
@@ -705,6 +706,7 @@ def _not_applied(
             notes=verdict.reason,
             side=side,
             content_hash=fingerprint,
+            source_received_at=payload.received_at,
             compared_to_import_id=verdict.compared_to,
             difference_summary=summary,
         )

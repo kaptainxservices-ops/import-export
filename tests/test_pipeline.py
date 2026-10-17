@@ -35,14 +35,23 @@ def repo():
     return InMemoryRepository([TENANT])
 
 
+# A supplier's second list of the same day is held for a person rather than
+# reconciled — see app/brain/sameday.py — so a test about what tomorrow's list does to
+# the board has to arrive tomorrow. DAY_TWO exists to say that out loud at each call
+# site, rather than having the tests quietly depend on the clock.
+DAY_ONE_AT = datetime(2026, 8, 7, 9, 0)
+DAY_TWO_AT = datetime(2026, 8, 8, 9, 0)
+
+
 def email(rows=None, *, subject="WTS Price List 07.08.2026", message_id="<m1@x>",
-          sender="sales@supplier.example", body="Please find our price list."):
+          sender="sales@supplier.example", body="Please find our price list.",
+          at=DAY_ONE_AT):
     return InboundEmail(
         tenant_id="tenant-1",
         message_id=message_id,
         from_email=sender,
         subject=subject,
-        received_at=datetime(2026, 8, 7, 9, 0),
+        received_at=at,
         body_text=body,
         attachments=[
             Attachment(filename="stock.xlsx", kind="table", rows=rows or DAY_ONE)
@@ -63,13 +72,23 @@ def test_first_import_creates_counterparty_and_offers(repo):
     assert repo.counterparties
 
 
-def test_second_identical_import_changes_nothing(repo):
+def test_an_identical_list_tomorrow_only_refreshes(repo):
     process_email(email(), repo)
-    result = process_email(email(message_id="<m2@x>"), repo)
+    result = process_email(email(message_id="<m2@x>", at=DAY_TWO_AT), repo)
 
     assert result.reconcile.refreshed == 3
     assert result.reconcile.updated == 0
     assert result.reconcile.closed == 0
+    assert len(repo.live_offers()) == 3
+
+
+def test_an_identical_list_the_same_day_is_settled_without_asking(repo):
+    """A supplier resending unchanged, or one email reaching two collectors. Neither
+    needs a person, and neither may move the board."""
+    process_email(email(), repo)
+    result = process_email(email(message_id="<m2@x>"), repo)
+
+    assert result.outcome == "same_as_applied"
     assert len(repo.live_offers()) == 3
 
 
@@ -83,7 +102,7 @@ def test_a_normal_second_morning(repo):
         ["Apple iPhone 16 128GB Teal", "0195949036002", "30", "665"],
         ["Apple iPhone 17 256GB White", "0195950643701", "29", "749"],
     ]
-    result = process_email(email(day_two, message_id="<m2@x>"), repo)
+    result = process_email(email(day_two, message_id="<m2@x>", at=DAY_TWO_AT), repo)
 
     counts = (
         result.reconcile.refreshed,
@@ -102,7 +121,9 @@ def test_price_change_is_written_to_the_change_log(repo):
     """The client has to be able to ask why a price moved and get an answer."""
     process_email(email(), repo)
     day_two = [HEADERS, ["Apple iPhone 15 128GB Black", "0195949035999", "50", "545"]]
-    process_email(email(day_two, message_id="<m2@x>", subject="WTS list"), repo)
+    process_email(
+        email(day_two, message_id="<m2@x>", subject="WTS list", at=DAY_TWO_AT), repo
+    )
 
     price_changes = [c for c in repo.changes if c.field == "unit_price"]
     assert price_changes
@@ -130,7 +151,7 @@ def test_a_broken_parse_closes_nothing(repo):
     process_email(email(), repo)
 
     broken = [HEADERS, ["Apple iPhone 15 128GB Black", "0195949035999", "50", "579"]]
-    result = process_email(email(broken, message_id="<m2@x>"), repo)
+    result = process_email(email(broken, message_id="<m2@x>", at=DAY_TWO_AT), repo)
 
     assert result.reconcile.status == "flagged_low_row_count"
     assert result.reconcile.closed == 0
@@ -143,7 +164,11 @@ def test_a_supplement_closes_nothing(repo):
 
     extra = [HEADERS, ["Apple iPhone 17 256GB White", "0195950643701", "50", "749"]]
     result = process_email(
-        email(extra, message_id="<m2@x>", subject="Just got 50 more iPhone 17"), repo
+        email(
+            extra, message_id="<m2@x>", subject="Just got 50 more iPhone 17",
+            at=DAY_TWO_AT,
+        ),
+        repo,
     )
 
     assert result.reconcile.closed == 0

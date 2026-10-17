@@ -169,19 +169,24 @@ def test_reprocessing_does_not_duplicate_the_email(repo):
 
 
 def test_reprocessing_twice_does_not_double_the_board(repo):
-    """Somebody will click it twice. The second pass sees its own rows as already live
-    and refreshes them rather than inserting a parallel set."""
+    """Somebody will click it twice.
+
+    The second pass is the same email, so it says exactly what the first one said —
+    which the same-day rule recognises and settles without asking anyone. Either way
+    the board must not gain a parallel set of rows, which is what this is really for.
+    """
     process_email(_email(), repo)
     email_id = next(iter(repo.emails))
     repo.attribute_email("tenant-1", email_id, classification="sell")
 
     reprocess_email("tenant-1", email_id, repo)
+    before = {o.identity_key: (o.quantity, o.unit_price) for o in repo.live_offers()}
+
     second = reprocess_email("tenant-1", email_id, repo)
 
     assert len(repo.live_offers()) == 3
-    assert second.reconcile is not None
-    assert second.reconcile.inserted == 0
-    assert second.reconcile.closed == 0
+    assert second.outcome == "same_as_applied"
+    assert {o.identity_key: (o.quantity, o.unit_price) for o in repo.live_offers()} == before
 
 
 def test_a_still_unresolved_email_reconciles_nothing(repo):

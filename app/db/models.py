@@ -294,3 +294,9 @@ class ImportRecord:
     content_hash: str | None = None
     compared_to_import_id: str | None = None
     difference_summary: str | None = None
+    # When the EMAIL arrived, not when this row was written. The same-day rule compares
+    # an arriving email's received_at against this, and comparing it against created_at
+    # instead would mean two different clocks: an email that arrived at 23:55 and was
+    # processed at 00:10 — an n8n poll delay, or a backlog after an outage — would be
+    # recorded as the next day's list and stop holding the revision that follows it.
+    source_received_at: datetime | None = None

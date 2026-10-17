@@ -293,10 +293,16 @@ class InMemoryRepository:
         if not applied:
             return None
 
-        newest = max(applied, key=lambda stored: stored.created_at)
+        # The EMAIL's clock, not the row's. created_at is when this import was
+        # written, which drifts from when the list arrived whenever n8n is behind —
+        # and an hour's drift across midnight silently stops the next list being held.
+        def arrived(stored):
+            return stored.record.source_received_at or stored.created_at
+
+        newest = max(applied, key=arrived)
         return PriorImport(
             id=newest.id,
-            created_at=newest.created_at,
+            created_at=arrived(newest),
             content_hash=newest.record.content_hash,
             row_count=newest.record.row_count,
         )

@@ -127,6 +127,15 @@ comment on type public.import_status is
 
 alter table public.imports
     add column if not exists content_hash text,
+    -- When the EMAIL arrived, not when this row was written.
+    --
+    -- The same-day rule compares an arriving email's received_at against the last
+    -- applied import. Comparing it against created_at instead means two different
+    -- clocks: an email that arrived at 23:55 and was processed at 00:10 — an n8n poll
+    -- delay, or a backlog after an outage — is recorded as the next day's list, and
+    -- the revision that follows it is applied straight to the board instead of being
+    -- held. Found by a test that passed for eleven hours and failed at midnight.
+    add column if not exists source_received_at timestamptz,
     -- The import this one was compared against. Null for a first-of-day list, which is
     -- compared against nothing.
     add column if not exists compared_to_import_id uuid
@@ -147,6 +156,10 @@ comment on column public.imports.content_hash is
     'identical boards.';
 comment on column public.imports.resolution is
     'How a held import was settled: same | new | partial. Null while it waits.';
+comment on column public.imports.source_received_at is
+    'The arrival time of the email behind this import, which is what the same-day rule '
+    'compares against. created_at is when the row was written and drifts from it '
+    'whenever ingestion is behind.';
 
 
 -- ---------------------------------------------------------------------------
@@ -211,5 +224,5 @@ create index if not exists imports_held_idx
 -- The lookup on every incoming list: has this counterparty and side already had one
 -- applied today?
 create index if not exists imports_applied_lookup_idx
-    on public.imports (tenant_id, counterparty_id, side, created_at desc)
+    on public.imports (tenant_id, counterparty_id, side, source_received_at desc)
     where status in ('applied', 'flagged_low_row_count', 'flagged_partial_list');
