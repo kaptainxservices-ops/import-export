@@ -144,3 +144,18 @@ def test_the_tenant_cannot_be_passed_in(client):
 
     for endpoint in (fill, place, board):
         assert "tenant_id" not in inspect.signature(endpoint).parameters
+
+
+def test_the_board_names_each_supplier_once_with_its_lots_added():
+    from app.api.matches import _legs
+    from app.brain.matching import Allocation, MatchOption
+
+    option = MatchOption(kind="combination", requirement_id="r", allocations=[
+        Allocation("o1", "gulf", 70, 545.0, "USD", "iPhone 14 Pro"),
+        Allocation("o2", "gulf", 30, 545.0, "USD", "iPhone 14 Pro"),
+        Allocation("o3", "almanar", 20, 550.0, "USD", "iPhone 14 Pro"),
+    ])
+    legs = _legs(option, {"gulf": "Gulf Cell", "almanar": None})
+    assert [(leg.name, leg.quantity, leg.lots) for leg in legs] == [
+        ("Gulf Cell", 100, 2), ("unnamed supplier", 20, 1),
+    ]

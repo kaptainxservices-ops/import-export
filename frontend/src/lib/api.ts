@@ -184,6 +184,9 @@ export interface MatchBoardRow {
   shortfall: number;
   filled_quantity: number;
   note: string | null;
+  spec_parts?: string[];
+  best_legs?: { name: string; quantity: number; lots?: number }[];
+  best_currency?: string | null;
 }
 
 export interface MatchBoard {

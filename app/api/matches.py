@@ -98,10 +98,19 @@ class MatchesOut(BaseModel):
 # ---------------------------------------------------------------- auth
 
 
+class LegOut(BaseModel):
+    name: str
+    quantity: int
+    # How many of that supplier's lots make up the quantity.
+    lots: int = 1
+
+
 class BoardRowOut(BaseModel):
     offer_id: str
     description: str
     spec: str
+    # The same facts as `spec`, one per item, for showing as separate labels.
+    spec_parts: list[str] = []
     counterparty_name: str | None
     country: str | None
     quantity: int | None
@@ -119,6 +128,12 @@ class BoardRowOut(BaseModel):
     shortfall: int = 0
     filled_quantity: int = 0
     note: str | None = None
+    # The best option's legs, structured: who supplies how many. `best_summary` is the
+    # same as one line.
+    best_legs: list[LegOut] = []
+    # The currency the suppliers quote in, which is what `blended_unit_cost` is in. The
+    # buyer's own currency is often unstated on a WTB list.
+    best_currency: str | None = None
 
 
 class BoardOut(BaseModel):
@@ -193,18 +208,23 @@ def board(
             state = "filled"
             filled += 1
 
+        spec_parts = [
+            p for p in (
+                f"{offer.capacity_gb}GB" if offer.capacity_gb else None,
+                offer.colour,
+                f"Grade {offer.grade}" if offer.grade else None,
+                f"{offer.region_code} spec" if offer.region_code else None,
+            ) if p
+        ]
         rows.append(
             BoardRowOut(
                 offer_id=offer.id,
                 description=offer.description,
-                spec=" · ".join(
-                    p for p in (
-                        f"{offer.capacity_gb}GB" if offer.capacity_gb else None,
-                        offer.colour,
-                        f"Grade {offer.grade}" if offer.grade else None,
-                        f"{offer.region_code} spec" if offer.region_code else None,
-                    ) if p
-                ),
+                spec=" · ".join(spec_parts),
+                spec_parts=spec_parts,
+                best_legs=_legs(best, names),
+                best_currency=(best.allocations[0].currency if best and best.allocations
+                               else None),
                 counterparty_name=offer.counterparty_name,
                 country=offer.country,
                 quantity=offer.quantity,
@@ -252,11 +272,37 @@ def board(
     )
 
 
+def _legs(option: MatchOption | None, names: dict[str, str | None]) -> list[LegOut]:
+    """Who supplies how many, one line per supplier.
+
+    Two lots from one supplier are one phone call, so they are added together and the
+    lot count kept, rather than listing 'Gulf Cell 70' and 'Gulf Cell 30' as though
+    they were two sources.
+    """
+    if option is None:
+        return []
+    legs: dict[str, LegOut] = {}
+    for allocation in option.allocations:
+        leg = legs.get(allocation.counterparty_id)
+        if leg is None:
+            legs[allocation.counterparty_id] = LegOut(
+                name=_name(allocation.counterparty_id, names), quantity=allocation.quantity
+            )
+        else:
+            leg.quantity += allocation.quantity
+            leg.lots += 1
+    return list(legs.values())
+
+
+def _name(counterparty_id: str, names: dict[str, str | None]) -> str:
+    """A supplier as a person reads it: their name, or their address, never a uuid."""
+    return names.get(counterparty_id) or "unnamed supplier"
+
+
 def _summarise(option: MatchOption, names: dict[str, str | None]) -> str:
     """'Al Manar 40 + Gulf Cell 60' — who supplies how many, in one line."""
     return " + ".join(
-        f"{names.get(a.counterparty_id) or a.counterparty_id[:8]} {a.quantity}"
-        for a in option.allocations[:3]
+        f"{_name(a.counterparty_id, names)} {a.quantity}" for a in option.allocations[:3]
     )
 
 

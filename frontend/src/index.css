@@ -655,21 +655,39 @@ main {
   border: 1px solid var(--line);
   border-radius: var(--radius);
   box-shadow: var(--shadow);
-  overflow: hidden;
+  overflow: clip;
+}
+
+/* One grid for the header and every row, so each column lines up all the way down. */
+.match-head,
+.match-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 96px minmax(200px, 270px) 150px;
+  column-gap: 28px;
+  align-items: start;
+}
+
+.match-head {
+  position: sticky;
+  top: var(--top-height);
+  z-index: 5;
+  padding: 10px 20px 10px 23px;
+  background: var(--panel);
+  border-bottom: 1px solid var(--line);
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 600;
 }
 
 .match-row {
-  display: flex;
-  justify-content: space-between;
-  align-items: flex-start;
-  gap: 24px;
   width: 100%;
-  padding: 15px 18px;
+  padding: 15px 20px;
   text-align: left;
   border: none;
   border-bottom: 1px solid var(--line);
   border-left: 3px solid transparent;
   background: none;
+  color: inherit;
   transition: background 0.1s ease;
 }
 
@@ -679,53 +697,148 @@ main {
 /* A fillable requirement is money on the table today. A short one is money that needs
    another phone call. The rest is demand nobody can currently serve — still worth
    seeing, which is why it dims rather than disappears. */
-.match-row.filled    { border-left-color: var(--globe); background: #f4f9fd; }
+.match-row.filled    { border-left-color: var(--globe); }
 .match-row.short     { border-left-color: var(--warn); }
-.match-row.filled:hover, .match-row.short:hover { background: var(--hover); }
 .match-row.near_miss { border-left-color: var(--line-2); }
-.match-row.no_supply { opacity: 0.6; }
+.match-row.no_supply .mr-main,
+.match-row.no_supply .mr-ask { opacity: 0.6; }
 
-/* Without this a long product name refuses to shrink and shoves the money column off
-   the right edge — flex children default to min-width:auto. */
-.match-main { min-width: 0; }
+/* Without min-width a long product name refuses to shrink and shoves the money column
+   off the right edge — grid and flex children default to min-width:auto. */
+.mr-main { min-width: 0; }
 
-.match-title {
+.mr-title {
+  font-size: 14.5px;
   font-weight: 600;
   line-height: 1.35;
   overflow-wrap: anywhere;
 }
-.match-spec { font-weight: 400; color: var(--muted); }
 
-.match-who, .match-best {
-  font-size: 12.5px;
-  color: var(--muted);
-  margin-top: 4px;
+.mr-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  margin-top: 6px;
 }
 
-.match-best strong { color: var(--ink-2); font-weight: 600; }
-.match-note { color: var(--warn); }
+.spec-chip {
+  padding: 1px 8px;
+  border-radius: 999px;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  color: var(--ink-2);
+  font-size: 12px;
+  white-space: nowrap;
+}
 
-.match-money { text-align: right; white-space: nowrap; }
+.mr-buyer {
+  margin-top: 6px;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--ink-2);
+}
 
-.match-margin {
+.mr-ask { text-align: right; }
+
+.mr-figure {
+  font-size: 17px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  line-height: 1.3;
+}
+
+.mr-sub {
+  font-size: 12px;
+  color: var(--muted);
+  line-height: 1.45;
+}
+
+.mr-fill { min-width: 0; }
+
+.mr-state-line {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.state-pill {
+  padding: 1px 9px;
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.state-pill.filled    { background: #e6f2fb; color: #0f5f99; }
+.state-pill.short     { background: var(--warn-soft); color: var(--warn); }
+.state-pill.near_miss { background: var(--panel); color: var(--ink-2); border: 1px solid var(--line-2); }
+.state-pill.no_supply { background: var(--panel); color: var(--muted); }
+
+.fill-bar {
+  height: 4px;
+  margin: 8px 0 7px;
+  border-radius: 4px;
+  background: var(--line);
+  overflow: hidden;
+}
+
+.fill-bar span {
+  display: block;
+  height: 100%;
+  border-radius: 4px;
+  background: var(--globe);
+}
+
+.match-row.short .fill-bar span { background: var(--warn); }
+
+.mr-legs {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  font-size: 12.5px;
+}
+
+.leg {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  min-width: 0;
+}
+
+.leg-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--ink-2);
+}
+
+.leg-qty { color: var(--muted); flex: none; }
+
+.mr-money { text-align: right; white-space: nowrap; }
+
+.mr-margin {
   font-size: 18px;
   font-weight: 700;
   color: var(--ok);
   letter-spacing: -0.02em;
+  line-height: 1.3;
 }
-
-.match-margin.none { color: var(--faint); font-weight: 400; }
 
 /* A cost the client controls, not money already earned — so not green. */
-.match-cost {
-  font-size: 16px;
-  font-weight: 650;
-  letter-spacing: -0.015em;
+.mr-cost {
+  font-size: 17px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  line-height: 1.3;
 }
 
-.match-options {
-  margin-top: 2px;
+.mr-cost.none { color: var(--faint); font-weight: 400; }
+
+.mr-options {
+  margin-top: 4px;
   font-size: 12px;
+  font-weight: 500;
   color: var(--link);
 }
 
@@ -1100,8 +1213,10 @@ main {
   main { padding: 16px 12px 60px; }
   .top { padding: 0 12px; gap: 10px; }
   .tab { padding: 0 9px; font-size: 13px; }
-  .match-row { flex-direction: column; gap: 8px; }
-  .match-money { text-align: left; }
+  .match-head { display: none; }
+  .match-row { grid-template-columns: minmax(0, 1fr) auto; row-gap: 12px; }
+  .mr-fill { grid-column: 1; }
+  .mr-money { grid-column: 2; grid-row: 2; }
   .offers th { top: 0; }
 }
 

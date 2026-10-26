@@ -134,6 +134,12 @@ export function MatchBoard({ onOpen }: { onOpen: (row: MatchBoardRow) => void })
       </div>
 
       <div className="match-rows">
+        <div className="match-head" aria-hidden="true">
+          <span>Requirement</span>
+          <span className="num">Wants</span>
+          <span>Best fill</span>
+          <span className="num">Value</span>
+        </div>
         {board.rows.map((row) => (
           <Row key={row.offer_id} row={row} onOpen={onOpen} />
         ))}
@@ -161,50 +167,102 @@ function Tile({
   );
 }
 
+const STATE_LABEL: Record<MatchBoardRow["state"], string> = {
+  filled: "Can fill",
+  short: "Part fill",
+  near_miss: "Near miss",
+  no_supply: "No supply",
+};
+
+/**
+ * One requirement, read left to right in the order a trader asks the questions: what is
+ * wanted and by whom, how many, who can supply it, and what it is worth.
+ *
+ * Four aligned columns under one header rather than three lines of prose per row. The
+ * old layout joined everything with middots — buyer, quantity, best supplier, blended
+ * cost, 'buyer stated no price' — so every row was a sentence to be read, and the
+ * figures never lined up from one row to the next.
+ */
 function Row({ row, onOpen }: { row: MatchBoardRow; onOpen: (row: MatchBoardRow) => void }) {
-  const wants =
-    row.quantity !== null && row.unit_price !== null
-      ? `wants ${row.quantity} at up to ${money(row.unit_price, row.currency)}`
-      : row.quantity !== null
-        ? `wants ${row.quantity}`
-        : "quantity not stated";
+  const parts = row.spec_parts ?? (row.spec ? row.spec.split(" · ") : []);
+  const legs = row.best_legs ?? [];
+  const wanted = row.quantity ?? 0;
+  const filledShare =
+    wanted > 0 ? Math.min(100, Math.round((row.filled_quantity / wanted) * 100)) : 0;
+  const costCurrency = row.best_currency ?? row.currency;
+  const fillable = row.state === "filled" || row.state === "short";
 
   return (
     <button className={`match-row ${row.state}`} onClick={() => onOpen(row)}>
-      <div className="match-main">
-        <div className="match-title">
-          {row.description}
-          {row.spec && <span className="match-spec"> · {row.spec}</span>}
+      <div className="mr-main">
+        <div className="mr-title">{row.description}</div>
+        {parts.length > 0 && (
+          <div className="mr-chips">
+            {parts.map((part) => (
+              <span key={part} className="spec-chip">
+                {part}
+              </span>
+            ))}
+          </div>
+        )}
+        <div className="mr-buyer">
+          {row.counterparty_name ?? "Buyer not named"}
+          {row.country && <span className="muted"> · {row.country}</span>}
         </div>
+      </div>
 
-        <div className="match-who">
-          {row.counterparty_name ?? "unknown buyer"}
-          {row.country && ` · ${row.country}`} · {wants}
+      <div className="mr-ask">
+        <div className="mr-figure">{row.quantity !== null ? row.quantity.toLocaleString() : "—"}</div>
+        <div className="mr-sub">
+          {row.unit_price !== null
+            ? `up to ${money(row.unit_price, row.currency)}`
+            : "no target price"}
         </div>
+      </div>
 
-        {row.best_summary ? (
-          <div className="match-best">
-            <strong>Best:</strong> {row.best_summary}
-            {row.blended_unit_cost !== null &&
-              ` · blended ${money(row.blended_unit_cost, row.currency)}`}
-            {row.note && <span className="match-note"> · {row.note}</span>}
+      <div className="mr-fill">
+        <div className="mr-state-line">
+          <span className={`state-pill ${row.state}`}>{STATE_LABEL[row.state]}</span>
+          {fillable && wanted > 0 && (
+            <span className="mr-sub">
+              {row.filled_quantity.toLocaleString()} of {wanted.toLocaleString()}
+            </span>
+          )}
+        </div>
+        {fillable && wanted > 0 && (
+          <div className="fill-bar" aria-hidden="true">
+            <span style={{ width: `${filledShare}%` }} />
+          </div>
+        )}
+        {fillable && legs.length > 0 ? (
+          <div className="mr-legs">
+            {legs.slice(0, 2).map((leg, i) => (
+              <span key={i} className="leg">
+                <span className="leg-name">{leg.name}</span>
+                <span className="leg-qty">
+                  {leg.quantity.toLocaleString()}
+                  {leg.lots && leg.lots > 1 ? ` · ${leg.lots} lots` : ""}
+                </span>
+              </span>
+            ))}
+            {legs.length > 2 && <span className="mr-sub">+{legs.length - 2} more</span>}
           </div>
         ) : (
-          <div className="match-best muted">{row.note}</div>
+          !fillable && row.note && <div className="mr-sub">{row.note}</div>
         )}
       </div>
 
-      <div className="match-money">
+      <div className="mr-money">
         {/* Only a real, fillable option shows a number. A near miss relaxed something —
             a different capacity, another colour — and printing money against it would
             promise margin nobody can collect. */}
         {row.total_margin !== null ? (
           <>
-            <div className="match-margin">
+            <div className="mr-margin">
               {money(row.total_margin, row.currency, { decimals: false })}
             </div>
-            <div className="match-options">
-              {row.option_count} option{row.option_count === 1 ? "" : "s"}
+            <div className="mr-sub">
+              margin{row.margin_pct !== null ? ` · ${row.margin_pct.toFixed(1)}%` : ""}
             </div>
           </>
         ) : row.blended_unit_cost !== null ? (
@@ -212,24 +270,19 @@ function Row({ row, onOpen }: { row: MatchBoardRow; onOpen: (row: MatchBoardRow)
           // will be paid, so margin is unknowable. The buy price is not — and it is the
           // half of the trade the client controls, so it is worth more than a dash.
           <>
-            <div className="match-cost">
-              buy at {money(row.blended_unit_cost, row.currency)}
-            </div>
-            <div className="match-options">
-              {row.filled_quantity} of {row.quantity ?? "?"} · {row.option_count} option
-              {row.option_count === 1 ? "" : "s"}
-            </div>
+            <div className="mr-cost">{money(row.blended_unit_cost, costCurrency)}</div>
+            <div className="mr-sub">buy price per unit</div>
           </>
         ) : (
-          <>
-            <div className="match-margin none">—</div>
-            <div className="match-options">
-              {row.near_miss_count > 0
-                ? `${row.near_miss_count} near-miss${row.near_miss_count === 1 ? "" : "es"}`
-                : "no supply"}
-            </div>
-          </>
+          <div className="mr-cost none">—</div>
         )}
+        <div className="mr-options">
+          {row.option_count > 0
+            ? `${row.option_count} option${row.option_count === 1 ? "" : "s"}`
+            : row.near_miss_count > 0
+              ? `${row.near_miss_count} near miss${row.near_miss_count === 1 ? "" : "es"}`
+              : ""}
+        </div>
       </div>
     </button>
   );

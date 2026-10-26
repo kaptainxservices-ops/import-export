@@ -6,8 +6,8 @@ import { freshness, relativeAge, type Offer } from "../lib/types";
 type SortKey = "unit_price" | "quantity" | "last_confirmed_at" | "description";
 
 const SORTS: { key: SortKey; label: string; ascending: boolean }[] = [
-  { key: "unit_price", label: "cheapest first", ascending: true },
   { key: "last_confirmed_at", label: "newest first", ascending: false },
+  { key: "unit_price", label: "cheapest first", ascending: true },
   { key: "quantity", label: "biggest lot first", ascending: false },
   { key: "description", label: "by name", ascending: true },
 ];
@@ -33,7 +33,8 @@ interface Props {
  * it is still the price history.
  */
 export function OfferTable({ offers, onSelect, onMatch, supplierName }: Props) {
-  const [sort, setSort] = useState<SortKey>("unit_price");
+  // Newest first: the trader opens Sellers and Buyers to see what has just arrived.
+  const [sort, setSort] = useState<SortKey>("last_confirmed_at");
 
   const sorted = useMemo(() => {
     const chosen = SORTS.find((s) => s.key === sort) ?? SORTS[0];

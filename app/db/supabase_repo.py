@@ -1245,7 +1245,7 @@ _BOARD_COLUMNS = (
     "id,counterparty_id,side,description,quantity,unit_price,currency,"
     "identity_key,description_key,ean,brand,category,capacity_gb,colour,"
     "grade,region_code,ram_gb,edition,availability,availability_note,"
-    "counterparties(name,country)"
+    "counterparties(name,country,primary_email)"
 )
 
 
@@ -1254,7 +1254,9 @@ def _board_offer(row: dict) -> BoardOffer:
     return BoardOffer(
         id=row["id"],
         counterparty_id=row["counterparty_id"],
-        counterparty_name=counterparty.get("name"),
+        # The address stands in until someone names the counterparty. A uuid fragment
+        # in its place ('ca7054ee 70') told the trader nothing.
+        counterparty_name=counterparty.get("name") or counterparty.get("primary_email"),
         side=row["side"],
         description=row.get("description") or "",
         quantity=row.get("quantity"),
