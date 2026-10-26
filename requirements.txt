@@ -20,3 +20,8 @@ xlrd==2.0.1
 beautifulsoup4==4.12.3
 lxml==5.3.0
 python-multipart==0.0.20
+# Time-zone data for zoneinfo. Linux ships it with the OS; Windows does not, and without
+# this package the same-day rule (app/brain/sameday.py) cannot name Europe/Amsterdam or
+# even UTC on a Windows machine -- every pipeline test fails there with
+# ZoneInfoNotFoundError. Harmless on Render: the package is pure data.
+tzdata==2025.2
