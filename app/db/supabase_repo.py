@@ -1175,13 +1175,13 @@ class SupabaseRepository:
         so matching keeps working on the deterministic keys alone."""
         try:
             rows = _all_rows(
-                lambda: self.client.table("model_aliases")
+                lambda: self.client.table("model_equivalences")
                 .select("from_key,to_key")
                 .eq("tenant_id", tenant_id),
                 cap=50_000,
             )
         except Exception as error:  # noqa: BLE001
-            log.warning("model_aliases unreadable (%s); matching on rules alone", error)
+            log.warning("model_equivalences unreadable (%s); matching on rules alone", error)
             return {}
         return {r["from_key"]: r.get("to_key") for r in rows}
 
@@ -1192,7 +1192,7 @@ class SupabaseRepository:
             human = {
                 r["from_key"]
                 for r in (
-                    self.client.table("model_aliases")
+                    self.client.table("model_equivalences")
                     .select("from_key")
                     .eq("tenant_id", tenant_id)
                     .eq("source", "human")
@@ -1204,7 +1204,7 @@ class SupabaseRepository:
                 {"tenant_id": tenant_id, **row} for row in rows if row["from_key"] not in human
             ]
             if payload:
-                self.client.table("model_aliases").upsert(
+                self.client.table("model_equivalences").upsert(
                     payload, on_conflict="tenant_id,from_key"
                 ).execute()
             return len(payload)

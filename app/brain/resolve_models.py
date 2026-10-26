@@ -158,7 +158,7 @@ def _parse(text: str, batch: list[Question]) -> dict[int, int]:
 
 
 def ask_about(questions: list[Question], usage: UsageLog | None = None) -> list[dict]:
-    """Put the questions to the configured model. Returns rows for model_aliases."""
+    """Put the questions to the configured model. Returns rows for the model_equivalences table."""
     if not questions or not available():
         return []
 
