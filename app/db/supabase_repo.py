@@ -1160,6 +1160,58 @@ class SupabaseRepository:
 
         return None
 
+    def model_catalogue(self, tenant_id: str) -> list[tuple[str, str | None, str | None]]:
+        rows = _all_rows(
+            lambda: self.client.table("offers")
+            .select("description,brand,colour")
+            .eq("tenant_id", tenant_id)
+            .eq("status", "live"),
+            cap=_MAX_ROWS * 2,
+        )
+        return [(r.get("description") or "", r.get("brand"), r.get("colour")) for r in rows]
+
+    def load_model_aliases(self, tenant_id: str) -> dict[str, str | None]:
+        """Every settled pair. Missing table (migration 0016 not yet run) reads as none,
+        so matching keeps working on the deterministic keys alone."""
+        try:
+            rows = _all_rows(
+                lambda: self.client.table("model_aliases")
+                .select("from_key,to_key")
+                .eq("tenant_id", tenant_id),
+                cap=50_000,
+            )
+        except Exception as error:  # noqa: BLE001
+            log.warning("model_aliases unreadable (%s); matching on rules alone", error)
+            return {}
+        return {r["from_key"]: r.get("to_key") for r in rows}
+
+    def save_model_aliases(self, tenant_id: str, rows: list[dict]) -> int:
+        if not rows:
+            return 0
+        try:
+            human = {
+                r["from_key"]
+                for r in (
+                    self.client.table("model_aliases")
+                    .select("from_key")
+                    .eq("tenant_id", tenant_id)
+                    .eq("source", "human")
+                    .in_("from_key", [row["from_key"] for row in rows])
+                    .execute()
+                ).data
+            }
+            payload = [
+                {"tenant_id": tenant_id, **row} for row in rows if row["from_key"] not in human
+            ]
+            if payload:
+                self.client.table("model_aliases").upsert(
+                    payload, on_conflict="tenant_id,from_key"
+                ).execute()
+            return len(payload)
+        except Exception as error:  # noqa: BLE001 -- an alias is a convenience, never a failure
+            log.warning("could not store model aliases: %s", error)
+            return 0
+
     def get_board_offer(self, tenant_id: str, offer_id: str) -> BoardOffer | None:
         rows = (
             self.client.table("offers")
@@ -1192,6 +1244,7 @@ class SupabaseRepository:
 _BOARD_COLUMNS = (
     "id,counterparty_id,side,description,quantity,unit_price,currency,"
     "identity_key,description_key,ean,brand,category,capacity_gb,colour,"
+    "grade,region_code,ram_gb,edition,availability,availability_note,"
     "counterparties(name,country)"
 )
 
@@ -1218,6 +1271,12 @@ def _board_offer(row: dict) -> BoardOffer:
         capacity_gb=row.get("capacity_gb"),
         colour=row.get("colour"),
         country=counterparty.get("country"),
+        grade=row.get("grade"),
+        region_code=row.get("region_code"),
+        ram_gb=row.get("ram_gb"),
+        edition=row.get("edition"),
+        availability=row.get("availability"),
+        availability_note=row.get("availability_note"),
     )
 
 

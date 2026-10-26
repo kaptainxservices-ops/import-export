@@ -163,6 +163,14 @@ class BoardOffer:
     country: str | None = None
     # Carried because matching uses it as a hard gate: a case is not a phone.
     category: str | None = None
+    # What a lot is beyond which product. Matching compares each when both sides state
+    # it, and tells the trader when the lot differs from what was asked for.
+    grade: str | None = None
+    region_code: str | None = None
+    ram_gb: int | None = None
+    edition: str | None = None
+    availability: str | None = None
+    availability_note: str | None = None
 
 
 @dataclass(frozen=True)

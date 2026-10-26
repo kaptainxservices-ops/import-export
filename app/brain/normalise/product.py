@@ -22,15 +22,32 @@ import re
 from dataclasses import dataclass, field
 
 from app.brain.normalise.brands import detect_brand, detect_category
+
+# canonical.py stands alone -- it imports nothing from this module -- so there is no
+# cycle; the import sits here only to keep it beside the other normalisers.
+from app.brain.normalise.canonical import (  # noqa: E402
+    canonical_brand,
+    canonical_model,
+    known_brand,
+)
 from app.brain.normalise.colours import normalise_colour
 from app.brain.normalise.grades import normalise_grade
 from app.brain.normalise.regions import normalise_region_code
 
 # '8+256', '12+1TB', '8/256' — RAM first, then storage. The slash form is Xiaomi's.
 _RAM_STORAGE = re.compile(
-    r"\b(?P<ram>\d{1,2})\s*[+/]\s*(?P<storage>\d{1,4})\s*(?P<u>gb|tb)?\b", re.IGNORECASE
+    r"\b(?P<ram>\d{1,2})\s*[+/]\s*(?P<storage>\d{1,4})\s*(?P<u>gb|tb|g|t)?\b", re.IGNORECASE
 )
 _CAPACITY = re.compile(r"\b(?P<n>\d{1,4})\s*(?P<u>gb|tb)\b", re.IGNORECASE)
+
+# The short forms graded-stock sheets use: '128G', '256G', '1T'. Whitehawk's Samsung
+# sheet writes capacity this way on two rows in three, and none of them were read, so
+# every size of a model in one colour shared an identity and all but the first price
+# vanished. Only real storage sizes are accepted with a bare G, which is what keeps
+# '5G' and '4G' -- the network, on almost every handset line -- out of it.
+_CAPACITY_SHORT = re.compile(
+    r"\b(?P<n>16|32|64|128|256|512)\s*(?P<u>g)\b|\b(?P<t>[12])\s*t\b", re.IGNORECASE
+)
 
 # Two sizes in a row, both carrying a unit and neither saying which is which:
 # 'MacBook Neo 13" A18 Pro 6C CPU 5C GPU 8GB 256GB'. Read left to right the first wins,
@@ -99,12 +116,16 @@ class ProductSpec:
     capacity_gb: int | None = None
     ram_gb: int | None = None
     colour: str | None = None
-    # Grade and region are read but deliberately kept OUT of identity_key below. They
-    # describe a lot rather than name a product, and the database's generated column
-    # mirrors that exactly — the two expressions have to agree or reconciliation starts
-    # creating duplicates instead of updating rows.
+    # Grade, region and availability describe a lot rather than name a product, and
+    # for that very reason they are part of identity_key below. One supplier's list
+    # carries the same model in grade AA, A, B and C at four prices, an India-spec and
+    # an EU-spec lot of one handset, and stock in the warehouse beside stock arriving
+    # in a fortnight. Each is an offer of its own; keyed without them, the first line
+    # of each group overwrote the rest. Matching still compares across them -- see
+    # app/brain/matching.py -- this only stops one lot erasing another.
     grade: str | None = None
     region_code: str | None = None
+    availability: str | None = None
     network: str | None = None
     dual_sim: bool | None = None
     edition: str | None = None
@@ -115,6 +136,10 @@ class ProductSpec:
     description: str = ""
     description_key: str = ""
     match_key: str = ""
+    # Which model this is, written one way however the supplier wrote it: 'SAM S23',
+    # 'Samsung Galaxy S23' and 'Galaxy S23 5G' all give 'samsung:s23'. Matching uses it;
+    # identity does not. See app/brain/normalise/canonical.py.
+    model_key: str = ""
     warnings: list[str] = field(default_factory=list)
 
     def identity_key(self) -> str:
@@ -141,6 +166,9 @@ class ProductSpec:
                 (self.colour or "").lower(),
                 (self.edition or "").lower(),
                 (self.part_number or "").lower(),
+                (self.grade or "").lower(),
+                (self.region_code or "").lower(),
+                (self.availability or "").lower(),
             ]
         )
 
@@ -159,6 +187,10 @@ def parse_product(
     capacity: str | None = None,
     ram: str | None = None,
     part_number: str | None = None,
+    grade: str | None = None,
+    region: str | None = None,
+    availability: str | None = None,
+    brand: str | None = None,
 ) -> ProductSpec:
     """Parse one product line. Never raises — a bad line yields an empty spec.
 
@@ -190,15 +222,23 @@ def parse_product(
     network_match = _NETWORK.search(raw)
     warnings = [capacity_warning] if capacity_warning else []
 
+    # A brand column ('MAKE', 'MFR') or a section heading is the supplier's own answer;
+    # the description often abbreviates it out of existence -- 'SAM S24 PLUS'.
+    resolved_brand = known_brand(brand) or detect_brand(raw) or canonical_brand(brand)
+    model = canonical_model(raw, brand=resolved_brand)
+    if resolved_brand is None and model.brand:
+        resolved_brand = model.brand
+
     return ProductSpec(
-        brand=detect_brand(raw),
-        category=detect_category(raw),
+        brand=resolved_brand,
+        category=detect_category(raw) or model.category,
         ean=resolved_ean,
         capacity_gb=capacity,
         ram_gb=ram,
         colour=resolved_colour,
-        grade=normalise_grade(raw),
-        region_code=normalise_region_code(raw),
+        grade=_grade_from(grade) or normalise_grade(raw),
+        region_code=_region_from(region) or normalise_region_code(raw),
+        availability=(availability or None),
         network=network_match.group(1).upper() if network_match else None,
         dual_sim=True if _DUAL_SIM.search(raw) else None,
         edition=_edition(raw),
@@ -206,8 +246,47 @@ def parse_product(
         description=raw,
         description_key=build_description_key(raw),
         match_key=build_match_key(raw),
+        model_key=model.key,
         warnings=warnings,
     )
+
+
+def _grade_from(cell: str | None) -> str | None:
+    """A 'Grade' column cell: 'AA', 'A', 'B+', 'C', 'A/B'.
+
+    The tenant's own scale lives in the database and is applied later; here a cell
+    from a column headed Grade is trusted to be one, so short tokens the free-text
+    reader would refuse -- 'AA' is not a single letter -- are kept as written.
+    """
+    if not cell or not cell.strip():
+        return None
+    parsed = normalise_grade(cell)
+    if parsed:
+        return parsed
+    text = re.sub(r"\s+", " ", cell).strip().upper()
+    if re.fullmatch(r"[A-E]{1,3}[+\-]?(?:\s*/\s*[A-E]{1,3}[+\-]?)?", text):
+        return text.replace(" ", "")
+    if len(text) <= 24:
+        return text
+    return None
+
+
+def _region_from(cell: str | None) -> str | None:
+    """A 'Spec' or 'Region' column cell. Bare market words count here, where in a
+    description they would not: a column headed Spec saying INDIA means India spec."""
+    if not cell or not cell.strip():
+        return None
+    parsed = normalise_region_code(cell)
+    if parsed:
+        return parsed
+    text = re.sub(r"[\s_]+", " ", cell).strip().lower()
+    markets = {
+        "india": "INDIA", "indian": "INDIA", "uk": "UK", "gb": "UK", "united kingdom": "UK",
+        "us": "LL/A", "usa": "LL/A", "global": "GLOBAL", "intl": "GLOBAL",
+        "international": "GLOBAL", "hk": "ZP/A", "uae": "ZP/A", "middle east": "ZP/A",
+        "china": "CH/A", "japan": "J/A", "korea": "KH/A",
+    }
+    return markets.get(text)
 
 
 def build_description_key(text: str) -> str:
@@ -236,6 +315,7 @@ def build_description_key(text: str) -> str:
     # is not kept here — it is already its own column in the key.
     text = _RAM_STORAGE.sub(lambda m: f" ram{m.group('ram')} ", text)
     text = _CAPACITY.sub(" ", text)
+    text = _CAPACITY_SHORT.sub(" ", text)
     text = _NOISE_TOKENS.sub(" ", text)
     text = _COLOUR_NOISE.sub(" ", text)
     text = _EAN.sub(" ", text)
@@ -356,7 +436,7 @@ def _parse_ram_and_capacity(raw: str) -> tuple[int | None, int | None, str | Non
     for match in _RAM_STORAGE.finditer(raw):
         ram = int(match.group("ram"))
         storage = int(match.group("storage"))
-        if (match.group("u") or "").lower() == "tb":
+        if (match.group("u") or "").lower().startswith("t"):
             storage *= 1024
         storage = _ROUNDED.get(storage, storage)
         if ram in _VALID_RAM_GB and storage in _VALID_GB:
@@ -397,6 +477,14 @@ def _parse_ram_and_capacity(raw: str) -> tuple[int | None, int | None, str | Non
         value = int(match.group("n")) * 1024
         if value in _VALID_GB:
             return ram_named, value, None
+
+    for match in _CAPACITY_SHORT.finditer(raw):
+        if match.group("t"):
+            return ram_named, int(match.group("t")) * 1024, None
+        value = int(match.group("n"))
+        if _NAMES_RAM.match(raw, match.end()):
+            continue
+        return ram_named, value, None
 
     match = _BARE_CAPACITY.search(raw)
     if match:
@@ -453,9 +541,14 @@ def _parse_columns(
     if capacity and capacity.strip():
         pair_ram, parsed_capacity, _ = _parse_ram_and_capacity(capacity)
         if parsed_capacity is None:
-            bare = re.fullmatch(r"\s*(\d{1,4})\s*(?:gb)?\s*", capacity, re.IGNORECASE)
+            bare = re.fullmatch(
+                r"\s*(\d{1,4})\s*(gb|g|go|tb|t|to)?\s*", capacity, re.IGNORECASE
+            )
             if bare:
-                value = _ROUNDED.get(int(bare.group(1)), int(bare.group(1)))
+                value = int(bare.group(1))
+                if (bare.group(2) or "").lower().startswith("t"):
+                    value *= 1024
+                value = _ROUNDED.get(value, value)
                 if value in _VALID_GB:
                     parsed_capacity = value
         read_capacity = parsed_capacity

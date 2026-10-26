@@ -102,6 +102,7 @@ class InMemoryRepository:
         # not in `self.offers`: everything reading that treats a row as live stock.
         self.held_rows: dict[str, list[dict]] = {}
         self.usage: list[UsageEvent] = []
+        self.model_aliases: dict[tuple[str, str], dict] = {}
         self._ids = count(1)
 
     def _next(self, prefix: str) -> str:
@@ -386,6 +387,31 @@ class InMemoryRepository:
         self.usage.extend(events)
 
     # ---------------------------------------------------------------- review
+
+    def model_catalogue(self, tenant_id: str) -> list[tuple[str, str | None, str | None]]:
+        return [
+            (offer.description, None, None)
+            for offer in self.offers.values()
+            if offer.tenant_id == tenant_id and offer.status == "live"
+        ]
+
+    def load_model_aliases(self, tenant_id: str) -> dict[str, str | None]:
+        return {
+            from_key: row.get("to_key")
+            for (tenant, from_key), row in self.model_aliases.items()
+            if tenant == tenant_id
+        }
+
+    def save_model_aliases(self, tenant_id: str, rows: list[dict]) -> int:
+        written = 0
+        for row in rows:
+            key = (tenant_id, row["from_key"])
+            existing = self.model_aliases.get(key)
+            if existing and existing.get("source") == "human":
+                continue
+            self.model_aliases[key] = dict(row)
+            written += 1
+        return written
 
     def list_review_queue(self, tenant_id: str, limit: int = 200) -> list[ReviewItem]:
         items = [

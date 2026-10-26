@@ -385,8 +385,25 @@ def test_no_supply_yields_no_options():
     assert fill_requirement(want(), []) == []
 
 
-def test_offers_without_a_price_are_ignored():
-    assert fill_requirement(want(), [have("a", 100, None)]) == []
+def test_an_offer_without_a_price_is_shown_and_says_so():
+    """Changed 26 October 2026. 1,114 earbuds listed 'price on request' are stock a
+    buyer can be told about; ignoring them hid a third of one supplier's list."""
+    options = fill_requirement(want(), [have("a", 100, None)])
+    assert len(options) == 1
+    assert options[0].allocations[0].unit_price is None
+    assert options[0].total_margin is None
+    assert any("no price" in w for w in options[0].warnings)
+
+
+def test_an_unpriced_lot_ranks_below_a_priced_one_and_never_joins_a_combination():
+    options = fill_requirement(
+        want(qty=100, price=None),
+        [have("unpriced", 100, None), have("priced", 100, 570), have("half", 50, 560)],
+    )
+    assert options[0].allocations[0].offer_id == "priced"
+    for option in options:
+        if option.kind == "combination":
+            assert all(a.unit_price is not None for a in option.allocations)
 
 
 def test_offers_with_no_quantity_are_ignored():

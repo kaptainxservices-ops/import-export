@@ -15,7 +15,8 @@ export interface Allocation {
   counterparty_id: string;
   counterparty_name: string | null;
   quantity: number;
-  unit_price: number;
+  /** null when the seller listed the lot without a price. */
+  unit_price: number | null;
   currency: string | null;
   description: string;
 }

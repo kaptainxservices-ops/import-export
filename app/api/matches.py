@@ -13,6 +13,8 @@ and the fact that the dashboard would never send one is not a defence.
 from __future__ import annotations
 
 import logging
+import re
+from dataclasses import replace
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel, Field
@@ -27,7 +29,9 @@ from app.brain.matching import (
     place_offer,
 )
 from app.brain.normalise import expand_variants
+from app.brain.normalise.canonical import canonical_model
 from app.brain.normalise.product import build_match_key
+from app.brain.resolve_models import effective_aliases
 from app.db.models import BoardOffer
 
 router = APIRouter(prefix="/matches", tags=["matches"])
@@ -42,7 +46,7 @@ class AllocationOut(BaseModel):
     counterparty_id: str
     counterparty_name: str | None = None
     quantity: int
-    unit_price: float
+    unit_price: float | None
     currency: str | None = None
     description: str
 
@@ -132,9 +136,10 @@ def board(
     """
     tenant_id, repository = context
 
+    aliases = _aliases(repository, tenant_id)
     demand = narrow(repository.load_board(tenant_id, "buy"), brand, category)
     supply_offers = repository.load_board(tenant_id, "sell")
-    supply = [_supply(o) for o in supply_offers]
+    supply = infer_networks([_supply(o, aliases) for o in supply_offers])
 
     # Free: every supply row already carries its counterparty's name from the join, so
     # the allocation summary can say 'Al Manar 40' instead of a uuid without a second
@@ -148,7 +153,7 @@ def board(
     currency: str | None = None
 
     for offer in demand[:limit]:
-        options = fill_requirement(_requirement(offer), supply)
+        options = fill_requirement(_requirement(offer, aliases), supply)
 
         # A near miss relaxed something — a different capacity, another colour. It is not
         # a fill, and counting it as one would put money in the total that nobody can
@@ -179,6 +184,8 @@ def board(
                     p for p in (
                         f"{offer.capacity_gb}GB" if offer.capacity_gb else None,
                         offer.colour,
+                        f"Grade {offer.grade}" if offer.grade else None,
+                        f"{offer.region_code} spec" if offer.region_code else None,
                     ) if p
                 ),
                 counterparty_name=offer.counterparty_name,
@@ -263,9 +270,12 @@ def fill(
     if subject.side != "buy":
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "that row is not a buyer requirement")
 
-    supply = [_supply(o) for o in repository.load_board(tenant_id, "sell")]
+    aliases = _aliases(repository, tenant_id)
+    supply = infer_networks(
+        [_supply(o, aliases) for o in repository.load_board(tenant_id, "sell")]
+    )
     options = fill_requirement(
-        _requirement(subject), supply, include_near_misses=include_near_misses
+        _requirement(subject, aliases), supply, include_near_misses=include_near_misses
     )
     return _response(subject, options, "fill", repository, tenant_id)
 
@@ -281,8 +291,9 @@ def place(
     if subject.side != "sell":
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "that row is not a seller offer")
 
-    demand = [_requirement(o) for o in repository.load_board(tenant_id, "buy")]
-    options = place_offer(_supply(subject), demand)
+    aliases = _aliases(repository, tenant_id)
+    demand = [_requirement(o, aliases) for o in repository.load_board(tenant_id, "buy")]
+    options = place_offer(_supply(subject, aliases), demand)
     return _response(subject, options, "place", repository, tenant_id)
 
 
@@ -311,14 +322,70 @@ def narrow(
     return demand
 
 
+def infer_networks(supply: list[Supply]) -> list[Supply]:
+    """A supplier's unlabelled line beside a labelled 5G line of the same model is 4G.
+
+    'Galaxy A17 (A175)/DS/128GB Blue' and 'Galaxy A17 (A176)/5G/DS/128GB Blue' on one
+    list are the 4G and the 5G phone; read alone, the first states no network and a
+    buyer asking for the A17 5G was offered it. The supplier has told us which is which
+    by labelling only one of them.
+    """
+    labelled = {
+        (s.counterparty_id, s.model_key)
+        for s in supply
+        if s.network == "5g" and s.model_key
+    }
+    return [
+        replace(s, network="4g")
+        if s.network is None and s.model_key and (s.counterparty_id, s.model_key) in labelled
+        else s
+        for s in supply
+    ]
+
+
+def _aliases(repository, tenant_id: str) -> dict[str, str]:
+    """Confirmed 'these two wordings are one model' pairs. Empty when there are none or
+    the store cannot be read -- matching then runs on the rules alone."""
+    loader = getattr(repository, "load_model_aliases", None)
+    if loader is None:
+        return {}
+    try:
+        return effective_aliases(loader(tenant_id))
+    except Exception:  # noqa: BLE001
+        return {}
+
+
 def _require(offer: BoardOffer | None) -> BoardOffer:
     if offer is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "no such offer on this board")
     return offer
 
 
-def _requirement(offer: BoardOffer) -> Requirement:
+def _model(offer: BoardOffer, aliases: dict[str, str] | None = None):
+    """The canonical model of a board row, after any alias a person or the model
+    resolver has confirmed for it. Derived on read, like match_key."""
+    model = canonical_model(offer.description, brand=offer.brand, colour=offer.colour)
+    key = model.key
+    if aliases and key in aliases:
+        key = aliases[key]
+    return model, key
+
+
+_NEW = re.compile(r"\b(?:new|brand\s*new|sealed|bnib|unopened)\b", re.IGNORECASE)
+
+
+def _requirement(offer: BoardOffer, aliases: dict[str, str] | None = None) -> Requirement:
+    model, model_key = _model(offer, aliases)
     return Requirement(
+        model_key=model_key,
+        model_tokens=model.tokens,
+        grade=offer.grade,
+        region_code=offer.region_code,
+        ram_gb=offer.ram_gb,
+        edition=offer.edition,
+        network=model.network,
+        connectivity=model.connectivity,
+        wants_new=bool(_NEW.search(offer.description or "")) and not offer.grade,
         id=offer.id,
         counterparty_id=offer.counterparty_id,
         quantity=offer.quantity,
@@ -354,8 +421,19 @@ def _accepted_colours(description: str, colour: str | None) -> tuple[str, ...]:
     return tuple(dict.fromkeys(found))
 
 
-def _supply(offer: BoardOffer) -> Supply:
+def _supply(offer: BoardOffer, aliases: dict[str, str] | None = None) -> Supply:
+    model, model_key = _model(offer, aliases)
     return Supply(
+        model_key=model_key,
+        model_tokens=model.tokens,
+        grade=offer.grade,
+        region_code=offer.region_code,
+        ram_gb=offer.ram_gb,
+        edition=offer.edition,
+        network=model.network,
+        connectivity=model.connectivity,
+        availability=offer.availability,
+        availability_note=offer.availability_note,
         id=offer.id,
         counterparty_id=offer.counterparty_id,
         quantity=offer.quantity,

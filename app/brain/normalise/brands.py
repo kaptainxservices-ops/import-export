@@ -17,7 +17,10 @@ _BRAND_ALIASES: list[tuple[str, str]] = [
     # one sample list reads 'Watch Ultra 3 LTE 49mm Black Titanium Case' with the word
     # Apple nowhere on the line — 40-odd rows that matched nothing, because 'apple watch'
     # above needs both words. 'Watch' alone is far too broad, so each model line is named.
-    (r"\bwatch\s*(?:ultra|series|se)\b", "Apple"),
+    # Not after 'Galaxy', 'Huawei' or 'Honor': 'GALAXY WATCH ULTRA (SM-L705F)' was being
+    # filed as an Apple watch, which put Samsung stock under the wrong brand gate and
+    # out of reach of every Samsung buyer.
+    (r"(?<!galaxy )(?<!huawei )(?<!honor )\bwatch\s*(?:ultra|series|se)\b", "Apple"),
     # Beats is Apple, and their lists never say so.
     (r"\b(?:beats|powerbeats|solo\s*buds|studio\s*buds)\b", "Apple"),
     # SanDisk product lines. Their flash drives are sold by line name — 'Ultra Flair',
@@ -61,7 +64,10 @@ _BRAND_ALIASES: list[tuple[str, str]] = [
         "Sony",
     ),
     (r"\b(?:nintendo|switch\s*2|switch)\b", "Nintendo"),
-    (r"\b(?:huawei|honor)\b", "Honor"),
+    # Two makers since 2020, with separate ranges and separate buyers. Filed as one,
+    # an Honor buyer was offered Huawei stock and the other way round.
+    (r"\bhonor\b", "Honor"),
+    (r"\bhuawei\b", "Huawei"),
     (r"\boppo\b", "Oppo"),
     (r"\bvivo\b", "Vivo"),
     (r"\brealme\b", "Realme"),
@@ -89,6 +95,10 @@ _BRANDS = [(re.compile(p, re.IGNORECASE), name) for p, name in _BRAND_ALIASES]
 # accessory, not a phone, and the word iPhone in it is describing compatibility.
 _CATEGORY_PATTERNS: list[tuple[str, str]] = [
     (r"\b(?:case|cover|sleeve|folio|pouch|bumper|wallet|holster)\b", "accessory"),
+    # Input devices sold for a tablet carry the tablet's name: 'HONOR PAD X9B MAX SMART
+    # BLUETOOTH KEYBOARD', 'HONOR MAGIC-PENCIL 4S'. Without these the word 'Pad' filed
+    # both as tablets and put keyboards in front of every tablet buyer.
+    (r"\b(?:keyboard|keyboards|pencil|stylus|mouse|trackpad)\b", "accessory"),
     # What the accessory is made of, or what it does, where the row never says 'case'.
     # Samsung name theirs '<model> <material>, <colour>' — 'Galaxy S25 FE Silicone,
     # Black' is a silicone case and 'Galaxy A17 Clear, Transparent' is a clear one.

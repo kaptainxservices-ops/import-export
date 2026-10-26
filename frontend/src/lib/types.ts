@@ -17,6 +17,10 @@ export interface Offer {
   region_code: string | null;
   grade: string | null;
   incoterm: string | null;
+  /** 'incoming' for stock still in transit; null for stock on hand. */
+  availability: string | null;
+  /** The supplier's own words about arrival, e.g. 'ETA 7-15 DAYS'. */
+  availability_note: string | null;
 
   quantity: number | null;
   unit_price: number | null;

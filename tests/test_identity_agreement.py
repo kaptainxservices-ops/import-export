@@ -208,6 +208,9 @@ def sql_identity_key(spec) -> str:
         "colour": spec.colour,
         "edition": spec.edition,
         "part_number": spec.part_number,
+        "grade": spec.grade,
+        "region_code": spec.region_code,
+        "availability": spec.availability,
     }
     evaluator = Evaluator(tokenise(generated_expression()), row)
     value = evaluator.expression()
@@ -233,15 +236,21 @@ LINES = [
     ("Echo Spot 2024 speaker", None),
     ("Samsung A37 5G DS A376 256GB Ent. Ed.", None),
     ("Nokia 3210 4G DS", None),
+    # Grade, market and availability: the 0015 change.
+    ("SAM S24FE", None, {"capacity": "128G", "colour": "Graphite", "grade": "B"}),
+    ("ONEPLUS 15R 256GB 12GB (CPH2767)", "6921815631088", {"region": "INDIA"}),
+    ("JBL FLIP ESSENTIAL 2 SPEAKER (JBLFLIPES2) NEW", "6925281928840",
+     {"colour": "GUN METAL", "availability": "incoming"}),
     # Nothing to key on at all.
     ("", None),
     ("   ", None),
 ]
 
 
-@pytest.mark.parametrize(("line", "ean"), LINES)
-def test_python_and_postgres_build_the_same_key(line, ean):
-    spec = parse_product(line, ean=ean)
+@pytest.mark.parametrize("case", LINES)
+def test_python_and_postgres_build_the_same_key(case):
+    line, ean, *extra = case
+    spec = parse_product(line, ean=ean, **(extra[0] if extra else {}))
     assert spec.identity_key() == sql_identity_key(spec)
 
 
@@ -252,7 +261,10 @@ def test_the_evaluator_is_actually_reading_the_migration():
 
     assert "ean" in expression
     assert "description_key" in expression
-    for column in ("capacity_gb", "colour", "edition", "part_number"):
+    for column in (
+        "capacity_gb", "colour", "edition", "part_number", "grade", "region_code",
+        "availability",
+    ):
         assert column in expression, f"{column} is part of identity in Python but not in SQL"
 
 
@@ -264,7 +276,8 @@ def test_a_drifted_migration_is_caught():
     row = {
         "ean": spec.ean, "brand": spec.brand, "description_key": spec.description_key,
         "capacity_gb": spec.capacity_gb, "colour": spec.colour, "edition": spec.edition,
-        "part_number": spec.part_number,
+        "part_number": spec.part_number, "grade": spec.grade,
+        "region_code": spec.region_code, "availability": spec.availability,
     }
     key = Evaluator(tokenise(drifted), row).expression()
 

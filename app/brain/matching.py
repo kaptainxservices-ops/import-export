@@ -36,9 +36,13 @@ so ranking penalises both.
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 from itertools import combinations
 from typing import Literal
+
+from app.brain.normalise.canonical import is_descriptive
+from app.brain.normalise.regions import regions_conflict
 
 MatchKind = Literal["exact", "combination", "partial", "near_miss"]
 
@@ -82,6 +86,20 @@ class Requirement:
     # orange' is one order for 50 units that three finishes can fill, not an order for
     # blue that silver nearly fills. Empty means only `colour` is acceptable.
     accepted_colours: tuple[str, ...] = ()
+    # The model, written one way however the line wrote it ('SAM S23' and 'Samsung
+    # Galaxy S23' are both 'samsung:s23'), and the words it was built from. See
+    # app/brain/normalise/canonical.py.
+    model_key: str = ""
+    model_tokens: tuple[str, ...] = ()
+    # What a lot is, beyond which product: compared when both sides state them.
+    grade: str | None = None
+    region_code: str | None = None
+    ram_gb: int | None = None
+    edition: str | None = None
+    network: str | None = None
+    connectivity: str | None = None
+    # The line says new, sealed or BNIB: graded stock is a different offer.
+    wants_new: bool = False
 
 
 @dataclass(frozen=True)
@@ -104,6 +122,21 @@ class Supply:
     match_key: str = ""
     # A hard gate, not a hint. See _compatible.
     category: str | None = None
+    # The model, written one way however the line wrote it ('SAM S23' and 'Samsung
+    # Galaxy S23' are both 'samsung:s23'), and the words it was built from. See
+    # app/brain/normalise/canonical.py.
+    model_key: str = ""
+    model_tokens: tuple[str, ...] = ()
+    # What a lot is, beyond which product: compared when both sides state them.
+    grade: str | None = None
+    region_code: str | None = None
+    ram_gb: int | None = None
+    edition: str | None = None
+    network: str | None = None
+    connectivity: str | None = None
+    # 'incoming' for stock still in transit, and what the supplier said about when.
+    availability: str | None = None
+    availability_note: str | None = None
 
 
 @dataclass(frozen=True)
@@ -127,7 +160,9 @@ class Allocation:
     offer_id: str
     counterparty_id: str
     quantity: int
-    unit_price: float
+    # None for a lot the seller listed without a price: real stock, a phone call away
+    # from a quote, and never to be shown as free.
+    unit_price: float | None
     currency: str | None
     description: str
 
@@ -180,6 +215,11 @@ def fill_requirement(
     include_near_misses: bool = True,
 ) -> list[MatchOption]:
     """Every way to fill one buyer requirement, best first."""
+    # A lot listed without a price stays a candidate. 1,114 earbuds 'price on request'
+    # are stock a buyer can be told about today; dropping them hid a third of one
+    # supplier's incoming list from every buyer on the board. They are offered alone,
+    # never inside a combination, because a blended cost with an unknown in it is not
+    # a number.
     candidates = [
         s
         for s in supply
@@ -187,7 +227,6 @@ def fill_requirement(
         # same firm on both sides of the board.
         if s.counterparty_id != requirement.counterparty_id
         and (s.quantity or 0) > 0
-        and s.unit_price is not None
     ]
 
     exact = [s for s in candidates if _is_exact(requirement, s)]
@@ -197,7 +236,8 @@ def fill_requirement(
         options.append(_single(requirement, item))
 
     if requirement.quantity:
-        options.extend(_combinations(requirement, exact, max_suppliers))
+        priced = [s for s in exact if s.unit_price is not None]
+        options.extend(_combinations(requirement, priced, max_suppliers))
 
     if include_near_misses:
         near = [s for s in candidates if not _is_exact(requirement, s) and _is_near(requirement, s)]
@@ -232,13 +272,16 @@ def place_offer(
         and (r.quantity or 0) > 0
         and _is_exact(r, offer)
     ]
+    lot_notes = _lot_notes(None, offer)
 
     # Best price first — this is the seller's side, so revenue is what is maximised.
     interested.sort(key=lambda r: (r.unit_price or 0), reverse=True)
 
     options: list[MatchOption] = []
     for buyer in interested:
-        options.append(_single_placement(buyer, offer))
+        option = _single_placement(buyer, offer)
+        option.warnings.extend(_lot_notes(buyer, offer))
+        options.append(option)
 
     remaining = offer.quantity or 0
     allocations: list[Allocation] = []
@@ -272,8 +315,8 @@ def place_offer(
 
         blended_revenue = round(revenue / placed, 4) if placed else None
         unit_margin = None
-        if not mismatch and blended_revenue is not None:
-            unit_margin = round(blended_revenue - (offer.unit_price or 0), 4)
+        if not mismatch and blended_revenue is not None and offer.unit_price is not None:
+            unit_margin = round(blended_revenue - offer.unit_price, 4)
 
         split = MatchOption(
             kind="combination",
@@ -284,8 +327,11 @@ def place_offer(
             blended_unit_cost=offer.unit_price,
             buyer_unit_price=blended_revenue,
             unit_margin=unit_margin,
-            total_margin=None if mismatch else round(revenue - cost, 2),
-            warnings=["currencies differ; margin not computed"] if mismatch else [],
+            total_margin=(
+                None if mismatch or offer.unit_price is None else round(revenue - cost, 2)
+            ),
+            warnings=(["currencies differ; margin not computed"] if mismatch else [])
+            + lot_notes,
         )
         options.append(split)
 
@@ -317,7 +363,7 @@ def _single(requirement: Requirement, item: Supply) -> MatchOption:
                 offer_id=item.id,
                 counterparty_id=item.counterparty_id,
                 quantity=take,
-                unit_price=item.unit_price or 0.0,
+                unit_price=item.unit_price,
                 currency=item.currency,
                 description=item.description,
             )
@@ -337,6 +383,7 @@ def _single(requirement: Requirement, item: Supply) -> MatchOption:
         )
     if requirement.unit_price is None:
         option.warnings.append("buyer stated no price; margin unknown")
+    option.warnings.extend(_lot_notes(requirement, item))
 
     return option
 
@@ -365,7 +412,7 @@ def _single_placement(buyer: Requirement, offer: Supply) -> MatchOption:
                 offer_id=buyer.id,
                 counterparty_id=buyer.counterparty_id,
                 quantity=take,
-                unit_price=buyer.unit_price or 0.0,
+                unit_price=buyer.unit_price,
                 currency=buyer.currency,
                 description=buyer.description or offer.description,
             )
@@ -403,7 +450,7 @@ def _combinations(
     if any((s.quantity or 0) >= wanted for s in exact):
         return []
 
-    pool = sorted(exact, key=lambda s: s.unit_price or 0)[:COMBINATION_POOL]
+    pool = sorted(exact, key=_price_order)[:COMBINATION_POOL]
     if len(pool) < 2:
         return []
 
@@ -457,7 +504,7 @@ def _sweep(
     suppliers: set[str] = set()
     remaining = wanted
 
-    for item in sorted(exact, key=lambda s: s.unit_price or 0):
+    for item in sorted(exact, key=_price_order):
         if remaining <= 0:
             break
         if item.counterparty_id not in suppliers and len(suppliers) >= max_suppliers:
@@ -483,7 +530,7 @@ def _build_combination(requirement: Requirement, group: tuple[Supply, ...]) -> M
     allocations: list[Allocation] = []
     cost = 0.0
 
-    for item in sorted(group, key=lambda s: s.unit_price or 0):
+    for item in sorted(group, key=_price_order):
         if remaining <= 0:
             break
         take = min(remaining, item.quantity or 0)
@@ -532,6 +579,10 @@ def _build_combination(requirement: Requirement, group: tuple[Supply, ...]) -> M
         )
     if mismatch:
         option.warnings.append("suppliers quote different currencies; margin not computed")
+    for item in group:
+        for note in _lot_notes(requirement, item):
+            if note not in option.warnings:
+                option.warnings.append(note)
 
     return option
 
@@ -552,27 +603,162 @@ def _is_exact(requirement: Requirement, item: Supply) -> bool:
     3 requirements out of 225. Falling back to the spec fields is what makes buyer
     lists usable at all.
     """
-    if not _compatible(requirement, item):
-        return False
+    return _product_relation(requirement, item) == "same" and not _differences(
+        requirement, item
+    )
 
-    if requirement.ean and item.ean:
-        return requirement.ean == item.ean
+
+ProductRelation = Literal["same", "close"] | None
+
+
+def _product_relation(requirement: Requirement, item: Supply) -> ProductRelation:
+    """Whether two lines name the same model, before any attribute of the lot.
+
+    'same' is certain: one barcode, one identity, or one canonical model -- which is
+    what lets 'SAM S23', 'Samsung S23' and 'Galaxy S23 5G' meet. 'close' is a model
+    name that matches except for words the rules do not recognise as part of a name
+    ('Nord CE6 Smooth' against 'Nord CE6'): offered as a near miss for a person to
+    confirm, never as a fill. Variant words and numbers are never in that leftover --
+    an S23 and an S23 Ultra are not close, they are different phones.
+    """
+    if not _compatible(requirement, item):
+        return None
+
+    if requirement.ean and item.ean and requirement.ean == item.ean:
+        return "same"
 
     # Both keys derived the same way: comparing them is meaningful.
     if (
         requirement.identity_key.startswith("spec:")
         and item.identity_key.startswith("spec:")
-        and requirement.identity_key == item.identity_key
+        and _spec_product(requirement.identity_key) == _spec_product(item.identity_key)
+        and _spec_product(item.identity_key)
     ):
-        return True
+        return "same"
+
+    if requirement.model_key and item.model_key:
+        return _model_relation(requirement, item)
+
+    # Two barcodes that differ, and no model on one side to say otherwise.
+    if requirement.ean and item.ean:
+        return None
 
     left, right = _comparable_keys(requirement, item)
-    return bool(
-        left
-        and left == right
-        and requirement.capacity_gb == item.capacity_gb
-        and _colour_ok(requirement, item)
-    )
+    return "same" if left and left == right else None
+
+
+def _spec_product(identity_key: str) -> str:
+    """The brand and description part of a spec identity, without the lot qualifiers."""
+    parts = identity_key.split("|")
+    return "|".join(parts[:2]) if len(parts) > 2 and parts[1] else ""
+
+
+def _model_relation(requirement: Requirement, item: Supply) -> ProductRelation:
+    left_brand, _, left = requirement.model_key.partition(":")
+    right_brand, _, right = item.model_key.partition(":")
+    if left_brand and right_brand and left_brand != right_brand:
+        return None
+    if not left or not right:
+        return None
+    if left == right:
+        return "same"
+
+    a, b = set(requirement.model_tokens), set(item.model_tokens)
+    if not a or not b:
+        return None
+    small, large = (a, b) if len(a) <= len(b) else (b, a)
+    if not small < large:
+        return None
+    extra = large - small
+    if all(_descriptive(word) for word in extra) and any(
+        any(c.isdigit() for c in word) for word in small
+    ):
+        return "close"
+    return None
+
+
+def _descriptive(word: str) -> bool:
+    # Three letters at least for a near miss: a two-letter leftover is more often a
+    # code than a description.
+    return len(word) >= 3 and is_descriptive(word)
+
+
+_NEW_WORDS = {"new", "sealed", "bnib", "brand new", "unopened"}
+
+
+def _grade_key(value: str | None) -> str:
+    return re.sub(r"[\s_\-]+", "", (value or "").lower())
+
+
+def _differences(requirement: Requirement, item: Supply) -> list[str]:
+    """Everything about this lot that is not what the buyer asked for, in words.
+
+    Each check runs only when both sides state the attribute. A buyer who wrote 'S23'
+    has not refused a 5G handset, and a list that does not mention its market has not
+    claimed one -- an unknown is not a mismatch, it is something to ask about.
+    """
+    out: list[str] = []
+
+    # One barcode is one capacity and one finish, whatever either line omitted.
+    same_barcode = bool(requirement.ean and item.ean and requirement.ean == item.ean)
+    if not same_barcode:
+        if requirement.capacity_gb != item.capacity_gb:
+            out.append(f"capacity {item.capacity_gb}GB, wanted {requirement.capacity_gb}GB")
+        if not _colour_ok(requirement, item):
+            out.append(f"colour {item.colour}, wanted {requirement.colour}")
+
+    if requirement.grade and item.grade:
+        if _grade_key(requirement.grade) != _grade_key(item.grade):
+            out.append(f"grade {item.grade}, wanted {requirement.grade}")
+    elif requirement.wants_new and item.grade and _grade_key(item.grade) not in ("new", "bnib"):
+        out.append(f"grade {item.grade} (graded stock), wanted new")
+
+    if regions_conflict(requirement.region_code, item.region_code):
+        out.append(f"spec {item.region_code}, wanted {requirement.region_code}")
+
+    if requirement.ram_gb and item.ram_gb and requirement.ram_gb != item.ram_gb:
+        out.append(f"{item.ram_gb}GB RAM, wanted {requirement.ram_gb}GB")
+
+    if requirement.network and item.network and requirement.network != item.network:
+        out.append(f"{item.network.upper()}, wanted {requirement.network.upper()}")
+
+    if (
+        requirement.connectivity
+        and item.connectivity
+        and requirement.connectivity != item.connectivity
+        and (requirement.category or item.category) in ("tablet", "wearable")
+    ):
+        out.append(f"{item.connectivity}, wanted {requirement.connectivity}")
+
+    wanted_edition = (requirement.edition or "").lower()
+    offered_edition = (item.edition or "").lower()
+    if "enterprise" in (wanted_edition + offered_edition) and wanted_edition != offered_edition:
+        offered = item.edition or "standard edition"
+        out.append(f"{offered}, wanted {requirement.edition or 'standard'}")
+
+    return out
+
+
+def _lot_notes(requirement: Requirement | None, item: Supply) -> list[str]:
+    """What a trader must know before quoting this lot, though it does not stop a fill."""
+    notes: list[str] = []
+    if item.unit_price is None:
+        notes.append("seller listed no price; ask for one")
+    if item.availability == "incoming":
+        notes.append(
+            "incoming stock" + (f" ({item.availability_note})" if item.availability_note else "")
+        )
+    if item.grade and (requirement is None or not requirement.grade):
+        notes.append(f"seller's lot is grade {item.grade}")
+    if item.region_code and (requirement is None or not requirement.region_code):
+        notes.append(f"{item.region_code} spec")
+    # The buyer named a market or a grade and the seller's line is silent on it: not a
+    # mismatch, but the first question to ask before quoting.
+    if requirement is not None and requirement.region_code and not item.region_code:
+        notes.append(f"seller did not state the spec; buyer wants {requirement.region_code}")
+    if requirement is not None and requirement.grade and not item.grade:
+        notes.append(f"seller did not state a grade; buyer wants {requirement.grade}")
+    return notes
 
 
 def _colour_ok(requirement: Requirement, item: Supply) -> bool:
@@ -585,6 +771,14 @@ def _colour_ok(requirement: Requirement, item: Supply) -> bool:
     49 of 50 all along.
     """
     if _same(requirement.colour, item.colour):
+        return True
+
+    # A buyer who named no colour has not refused any. 'Samsung S24 FE 128GB x50' is
+    # an order the board can fill in whatever finishes exist; reading it as an order
+    # for no colour made every lot a near miss and every requirement look unfillable.
+    if not (requirement.colour or "").strip() and not requirement.accepted_colours:
+        return True
+    if (requirement.colour or "").strip().lower() in {"mixed", "any", "assorted", "random"}:
         return True
 
     if requirement.accepted_colours and item.colour:
@@ -643,29 +837,25 @@ def _is_near(requirement: Requirement, item: Supply) -> bool:
     Two different EANs alone do not make a near-miss — a case and a phone have
     different EANs too. The descriptions have to agree first.
     """
-    if not _compatible(requirement, item):
+    relation = _product_relation(requirement, item)
+    if relation is None:
         return False
 
-    left, right = _comparable_keys(requirement, item)
-    if not left or left != right:
-        return False
-
-    differences = 0
-    if requirement.capacity_gb != item.capacity_gb:
-        differences += 1
-    if not _colour_ok(requirement, item):
-        differences += 1
-
+    differences = len(_differences(requirement, item)) + (1 if relation == "close" else 0)
     return 0 < differences <= 2
 
 
 def _relaxations(requirement: Requirement, item: Supply) -> list[str]:
     out = []
-    if requirement.capacity_gb != item.capacity_gb:
-        out.append(f"capacity {item.capacity_gb}GB, wanted {requirement.capacity_gb}GB")
-    if not _colour_ok(requirement, item):
-        out.append(f"colour {item.colour}, wanted {requirement.colour}")
+    if _product_relation(requirement, item) == "close":
+        out.append(f"listed as '{item.description}'; check it is the same model")
+    out.extend(_differences(requirement, item))
     return out
+
+
+def _price_order(item: Supply) -> float:
+    """Cheapest first, and an unpriced lot last -- never first as if it were free."""
+    return item.unit_price if item.unit_price is not None else float("inf")
 
 
 def _same(left: str | None, right: str | None) -> bool:
@@ -707,6 +897,9 @@ def _score(option: MatchOption) -> float:
         coverage = min(1.0, filled / wanted) if wanted else 0.0
         if option.kind == "near_miss":
             coverage *= 0.5
+        # A lot with a price beats one without: one is a quote, the other a phone call.
+        if any(a.unit_price is None for a in option.allocations):
+            coverage *= 0.8
         return round(-1.0 + coverage * 0.9, 4)
 
     score = float(option.total_margin)

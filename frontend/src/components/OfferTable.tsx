@@ -91,14 +91,14 @@ export function OfferTable({ offers, onSelect, onMatch, supplierName }: Props) {
             const age = freshness(offer.last_confirmed_at);
             const closed = offer.status !== "live";
 
-            // Capacity · colour · grade · region. Grade stays empty until the client
-            // supplies their ranked scale — an invented condition on goods worth
-            // hundreds a unit is worse than a gap.
+            // Capacity · colour · grade · region. Grade is what the supplier wrote in
+            // their Grade column, labelled so 'A' cannot be read as part of the name;
+            // the same model in AA and in C is two lots at two prices.
             const spec = [
               offer.capacity_gb ? `${offer.capacity_gb}GB` : null,
               offer.colour,
-              offer.grade,
-              offer.region_code,
+              offer.grade ? `Grade ${offer.grade}` : null,
+              offer.region_code ? `${offer.region_code} spec` : null,
             ].filter(Boolean);
 
             const who = supplierName?.(offer.counterparty_id) ?? null;
@@ -110,6 +110,11 @@ export function OfferTable({ offers, onSelect, onMatch, supplierName }: Props) {
                     {offer.description ?? "—"}
                     {offer.in_conversation && <span className="tag">in conversation</span>}
                     {closed && <span className="tag closed">{offer.status}</span>}
+                    {offer.availability === "incoming" && (
+                      <span className="tag" title="Stock in transit, not yet in the warehouse">
+                        incoming{offer.availability_note ? ` · ${offer.availability_note}` : ""}
+                      </span>
+                    )}
                   </div>
                   {spec.length > 0 && <div className="item-spec">{spec.join(" · ")}</div>}
                   {who && <div className="item-who">{who}</div>}

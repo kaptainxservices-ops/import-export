@@ -27,7 +27,7 @@ import — and when any check is uncertain, nothing closes.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime
 from typing import Literal
 
@@ -72,6 +72,9 @@ class IncomingOffer:
     currency: str | None = None
     description: str = ""
     source_ref: str = ""
+    # The sheet and section a row came from. Two rows of one identity from the same
+    # place at the same price are two batches of one lot, and their quantities add.
+    group: str = ""
 
     # Product columns — brand, ean, capacity and so on — carried through for storage.
     # Reconciliation never reads them; identity is already decided by identity_key.
@@ -156,11 +159,15 @@ def reconcile(
     """
     result = ReconcileResult(row_count=len(incoming))
 
-    deduped, duplicates = _dedupe(incoming)
+    deduped, duplicates, combined = _dedupe(incoming)
     result.duplicate_rows = duplicates
     if duplicates:
         result.notes.append(
             f"{duplicates} duplicate identities in one list; kept the first of each"
+        )
+    if combined:
+        result.notes.append(
+            f"{combined} repeated lines added to the line above them (same sheet, same price)"
         )
 
     if not deduped:
@@ -225,25 +232,50 @@ def reconcile(
     return result
 
 
-def _dedupe(incoming: list[IncomingOffer]) -> tuple[list[IncomingOffer], int]:
-    """Keep the first row of each identity.
+def _dedupe(incoming: list[IncomingOffer]) -> tuple[list[IncomingOffer], int, int]:
+    """One row per identity. Returns (rows, dropped duplicates, combined repeats).
 
     The same product does appear twice in one list — under two section headings, or
-    once with an EAN and once without. Summing the quantities would invent stock; the
-    two rows are one lot described twice, not two lots.
+    once with an EAN and once without. Summing those would invent stock; they are one
+    lot described twice, so the first is kept.
+
+    Two lines of one identity in the *same* sheet and section, at the same price and
+    with different quantities, are the other case. Whitehawk lists 'A | SAM S25 ULTRA |
+    512G | Black | 3 | 615' and, two lines later, the same with 4: two batches of one
+    lot, 7 units. Keeping the first reported 3 and lost 4 real handsets.
     """
-    seen: set[str] = set()
+    first: dict[str, int] = {}
     out: list[IncomingOffer] = []
     duplicates = 0
+    combined = 0
 
     for item in incoming:
-        if item.identity_key in seen:
-            duplicates += 1
+        index = first.get(item.identity_key)
+        if index is None:
+            first[item.identity_key] = len(out)
+            out.append(item)
             continue
-        seen.add(item.identity_key)
-        out.append(item)
 
-    return out, duplicates
+        kept = out[index]
+        repeat_batch = (
+            item.group
+            and item.group == kept.group
+            and kept.quantity is not None
+            and item.quantity is not None
+            and kept.quantity != item.quantity
+            and kept.unit_price is not None
+            and item.unit_price is not None
+            and abs(kept.unit_price - item.unit_price) < 0.005
+            and (kept.currency or "") == (item.currency or "")
+        )
+        if repeat_batch:
+            out[index] = replace(kept, quantity=kept.quantity + item.quantity)
+            combined += 1
+            continue
+
+        duplicates += 1
+
+    return out, duplicates, combined
 
 
 def _closure_permitted(

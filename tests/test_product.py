@@ -487,14 +487,22 @@ def test_a_row_without_a_part_number_is_unaffected():
     assert plain.identity_key().endswith("|")
 
 
-def test_grade_is_still_not_identity():
-    """Deliberate, and unchanged by the above. A grade describes the condition of a lot
-    rather than naming a product, and two graded lots of one handset are the same row
-    with a quality note — not two rows."""
-    a_plus = parse_product("Apple iPhone 15 128GB Blue A/A+", ean="0195949035999")
-    b_grade = parse_product("Apple iPhone 15 128GB Blue B grade", ean="0195949035999")
+def test_grade_is_identity():
+    """Reversed on 26 October 2026, by a real list. Whitehawk's Samsung sheet carries
+    the same model and colour in grades AA, A, B and C at four prices; with grade
+    outside identity the first line stood and the other three lots were dropped."""
+    aa = parse_product("SAM S24FE", capacity="128G", colour="Graphite", grade="AA")
+    b = parse_product("SAM S24FE", capacity="128G", colour="Graphite", grade="B")
+    again = parse_product("SAM S24FE", capacity="128G", colour="Graphite", grade="AA")
 
-    assert a_plus.identity_key() == b_grade.identity_key()
+    assert aa.identity_key() != b.identity_key()
+    assert aa.identity_key() == again.identity_key()
+
+
+def test_a_grade_written_like_a_region_code_is_not_a_region():
+    """'A/A+' is a grade. Read as Apple region 'A/A' it would split one lot in two."""
+    spec = parse_product("Apple iPhone 15 128GB Blue A/A+", ean="0195949035999")
+    assert spec.region_code is None
 
 
 def test_identity_falls_back_to_spec_without_an_ean():

@@ -39,8 +39,19 @@ _ALIASES: dict[str, tuple[str, ...]] = {
     ),
     "brand": (
         "brand", "brands", "marke", "marca", "merk", "marka", "manufacturer",
-        "hersteller", "producent", "make",
+        "hersteller", "producent", "make", "mfr", "mfg", "oem",
     ),
+    # Grade is a column of its own on every graded list — Whitehawk's Samsung sheet is
+    # 'Grade | MFR | Model | Capacity | Colour | QTY | Price GBP'. Unread, every grade of
+    # one model collapsed into a single identity and the AA line overwrote the A, B and
+    # C lines beneath it: 112 of 212 rows gone from one sheet.
+    "grade": (
+        "grade", "grades", "grading", "condition", "cond", "zustand", "stato",
+        "klasa", "stan techniczny", "grade condition",
+    ),
+    # The market a lot is built for. Whitehawk heads it 'SPEC' and fills it with
+    # EU-UK, UK and INDIA; an India-spec handset and an EU one are priced apart.
+    "region": ("spec", "region", "version", "market", "variant region", "specs region"),
     "code": (
         "code", "codes", "partcode", "part code", "part no", "part number", "p n", "pn",
         "artikelnummer", "artnr", "sku", "mpn", "ref", "reference", "codice", "kod",
@@ -59,7 +70,7 @@ _ALIASES: dict[str, tuple[str, ...]] = {
     "category": ("category", "categories", "kategorie", "categoria", "categorie", "kategoria"),
     "currency": ("currency", "waehrung", "wahrung", "valuta", "moneda", "devise"),
     "colour": ("colour", "color", "colours", "colors", "farbe", "kleur", "colore", "kolor"),
-    "notes": ("notes", "note", "obs", "remarks", "bemerkung", "specifications", "spec", "link"),
+    "notes": ("notes", "note", "obs", "remarks", "bemerkung", "specifications", "link"),
 }
 
 # Some suppliers head the price column with nothing but the currency — Masterfone uses
@@ -69,6 +80,12 @@ _CURRENCY_ONLY = {
     "usd": "USD", "eur": "EUR", "gbp": "GBP", "aed": "AED", "pln": "PLN",
     "chf": "CHF", "czk": "CZK", "huf": "HUF", "ron": "RON", "sek": "SEK",
     "€": "EUR", "$": "USD", "£": "GBP",
+    # The spellings of the same columns that real sheets use. Whitehawk's are 'Euro'
+    # and 'USD$' beside a bare 'Price'.
+    "euro": "EUR", "euros": "EUR", "eur €": "EUR", "€ eur": "EUR",
+    "usd $": "USD", "usd$": "USD", "$ usd": "USD", "us$": "USD", "us $": "USD",
+    "dollar": "USD", "dollars": "USD", "us dollar": "USD",
+    "gbp £": "GBP", "£ gbp": "GBP", "pound": "GBP", "pounds": "GBP", "sterling": "GBP",
 }
 
 _LOOKUP: dict[str, str] = {
@@ -78,7 +95,7 @@ _LOOKUP: dict[str, str] = {
 # A currency symbol or code in the header names the column's currency — 'Preis / Price €',
 # 'Prezzo EUR'. Reliable, and it removes the guesswork from every row beneath.
 _HEADER_CURRENCY = [
-    (re.compile(r"€|\beur\b", re.IGNORECASE), "EUR"),
+    (re.compile(r"€|\beur\b|\beuros?\b", re.IGNORECASE), "EUR"),
     (re.compile(r"\$|\busd\b", re.IGNORECASE), "USD"),
     (re.compile(r"£|\bgbp\b", re.IGNORECASE), "GBP"),
     (re.compile(r"\baed\b|\bdhs?\b", re.IGNORECASE), "AED"),
@@ -131,6 +148,10 @@ class ColumnMap:
     # seller's own article number. Only the former qualifies identity; see
     # `_SELLERS_OWN_CODE`.
     code_is_part_number: bool = False
+    # Further price columns that each name their own currency — the 'Euro' and 'USD$'
+    # beside a bare 'Price'. They are conversions of the main price, not extra stock,
+    # and they are what tells us which currency the bare column is in.
+    other_prices: dict[str, int] = field(default_factory=dict)
 
     def get(self, field_name: str) -> int | None:
         return self.columns.get(field_name)
@@ -160,7 +181,10 @@ class ColumnMap:
 def normalise_header(cell: str | None) -> str:
     if not cell:
         return ""
-    text = str(cell).replace("\n", " ").replace("/", " ")
+    # Underscores separate words too: 'Total_qty' is 'total qty'. Read as one word it
+    # matched nothing, so the quantity column of two Whitehawk sheets was never read and
+    # every row on them reached the board with no quantity.
+    text = str(cell).replace("\n", " ").replace("/", " ").replace("_", " ")
     text = _PUNCT.sub(" ", text)
     return re.sub(r"\s+", " ", text).strip().lower()
 
@@ -223,29 +247,62 @@ def map_columns(header: list[str]) -> ColumnMap:
     hand rather than stock on its way.
     """
     columns: dict[str, int] = {}
-    currency: str | None = None
+    first_currency: str | None = None
+    price_currency: str | None = None
+    other_prices: dict[str, int] = {}
     code_is_part_number = False
 
     for index, cell in enumerate(header):
         field_name = classify_header_cell(cell)
-        if field_name and field_name not in columns:
+        cell_currency = header_currency(cell)
+
+        if field_name == "price" and "price" in columns:
+            # A second price column. When it names a currency it is a conversion of
+            # the first ('Price | Euro | USD$'), worth keeping as evidence of what the
+            # first one is in.
+            if cell_currency and cell_currency not in other_prices:
+                other_prices[cell_currency] = index
+        elif field_name and field_name not in columns:
             columns[field_name] = index
+            if field_name == "price":
+                price_currency = cell_currency
             if field_name == "code":
                 code_is_part_number = normalise_header(cell) not in _SELLERS_OWN_CODE
 
-        if currency is None and cell:
-            normalised = normalise_header(cell)
-            if normalised in _CURRENCY_ONLY:
-                currency = _CURRENCY_ONLY[normalised]
-            else:
-                for pattern, code in _HEADER_CURRENCY:
-                    if pattern.search(str(cell)):
-                        currency = code
-                        break
+        if first_currency is None and cell_currency:
+            first_currency = cell_currency
+
+    # The price column's own header decides its currency. Only when it names none, and
+    # no other column offers a converted price, does a currency elsewhere in the header
+    # count — 'Model | Qty | Price' under a 'Prices in EUR' cell still means EUR. With
+    # conversion columns present that fallback is exactly wrong: Whitehawk's
+    # 'Price | Euro | USD$' made every GBP price on the sheet read as dollars.
+    if price_currency is not None:
+        currency = price_currency
+    elif other_prices:
+        currency = None
+    else:
+        currency = first_currency
 
     return ColumnMap(
-        columns=columns, currency=currency, code_is_part_number=code_is_part_number
+        columns=columns,
+        currency=currency,
+        code_is_part_number=code_is_part_number,
+        other_prices=other_prices,
     )
+
+
+def header_currency(cell: str | None) -> str | None:
+    """The currency a header cell names, if any: 'Price GBP', '€', 'USD $', 'Euro'."""
+    if not cell:
+        return None
+    normalised = normalise_header(cell)
+    if normalised in _CURRENCY_ONLY:
+        return _CURRENCY_ONLY[normalised]
+    for pattern, code in _HEADER_CURRENCY:
+        if pattern.search(str(cell)):
+            return code
+    return None
 
 
 def looks_like_header(row: list[str], minimum: int = 2) -> bool:

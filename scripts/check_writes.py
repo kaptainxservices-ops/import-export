@@ -111,7 +111,7 @@ def check_row(table: str, row: dict) -> None:
         value = row.get(column)
         if value is None:
             continue
-        if isinstance(value, bool) or not isinstance(value, (int, float)):
+        if isinstance(value, bool) or not isinstance(value, int | float):
             raise Rejection(f"{table}.{column} is numeric, got {type(value).__name__} {value!r}")
         limit = 10 ** (precision - scale)
         if abs(value) >= limit:

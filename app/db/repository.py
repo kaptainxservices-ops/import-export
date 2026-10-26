@@ -138,6 +138,25 @@ class Repository(Protocol):
         decision, so a failure to write it must never fail the email that earned it."""
         ...
 
+    # ---------------------------------------------------------------- model names
+
+    def model_catalogue(self, tenant_id: str) -> list[tuple[str, str | None, str | None]]:
+        """(description, brand, colour) of every live row on both sides of the board.
+
+        What the model resolver compares a new wording against. Descriptions rather
+        than stored keys, because the key is derived and a stored derivation goes stale
+        the day canonical.py improves.
+        """
+        ...
+
+    def load_model_aliases(self, tenant_id: str) -> dict[str, str | None]:
+        """from_key -> to_key for every settled pair; to_key None means 'different'."""
+        ...
+
+    def save_model_aliases(self, tenant_id: str, rows: list[dict]) -> int:
+        """Store answers. A human row already present for a from_key is left alone."""
+        ...
+
     # ---------------------------------------------------------------- matching
 
     def tenant_for_user(self, user_id: str) -> str | None:

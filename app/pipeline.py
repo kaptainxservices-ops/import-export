@@ -35,8 +35,10 @@ from app.brain.normalise import (
 )
 from app.brain.quoting import strip_quoted_history
 from app.brain.reconcile import IncomingOffer, ReconcileResult, reconcile
+from app.brain.resolve_models import resolve_new_models
 from app.brain.sameday import decide
 from app.brain.sender import resolve_sender
+from app.brain.summary import drop_summary_rows
 from app.brain.tables import ColumnMapper, parse_grid, read_html_tables, read_spreadsheet
 from app.brain.tables.parser import TableRow
 from app.db.models import EmailRecord, ImportRecord, UsageEvent
@@ -368,6 +370,7 @@ def _extract_and_reconcile(
     rows, expanded, unmapped = extract_rows(
         payload, counterparty.decimal_separator, mapper_for(usage), declared
     )
+    rows, summarised = drop_summary_rows(rows)
     _record_usage(repo, tenant_id, email_id, usage, since=written)
 
     # Scored per row before anything is written. Two separate answers come back: how much
@@ -403,6 +406,9 @@ def _extract_and_reconcile(
     incoming = [
         IncomingOffer(
             identity_key=spec.identity_key(),
+            # Which sheet and which section the row came from. Two lines of one
+            # identity in the same place are two batches; see reconcile._dedupe.
+            group=f"{row.source_ref.rsplit(' row ', 1)[0]}|{row.section or ''}",
             quantity=row.quantity,
             unit_price=row.price,
             # Order of authority: what this row said, then what the email declared for
@@ -430,6 +436,8 @@ def _extract_and_reconcile(
                 # 'A/A+' and 'ZP/A' are half of what a trader reads before quoting.
                 "grade": spec.grade,
                 "region_code": spec.region_code,
+                "availability": spec.availability,
+                "availability_note": row.availability_note,
                 # EXW and FOB are not the same number. A board that prints one price for
                 # both is comparing a factory-gate cost against a delivered one.
                 "incoterm": row.incoterm,
@@ -489,6 +497,10 @@ def _extract_and_reconcile(
         is_complete_list=is_complete,
     )
     result.notes.append(f"completeness: {why}")
+    if summarised:
+        result.notes.append(
+            f"{summarised} rows of a summary sheet left out; they total rows of another sheet"
+        )
     if "no quoted reply" not in why_body:
         result.notes.append(f"body: {why_body}")
 
@@ -524,6 +536,20 @@ def _extract_and_reconcile(
             source_received_at=payload.received_at,
         )
     )
+
+    # After the board is written, never before: a model that is slow or down must not
+    # delay the stock, and the catalogue it compares against should include this list.
+    calls_before = len(usage.calls)
+    resolved = resolve_new_models(
+        repo,
+        tenant_id,
+        [(row.description, spec.brand or row.brand, spec.colour)
+         for row, spec in ((r, _spec(r)) for r in rows)],
+        usage,
+    )
+    if resolved:
+        result.notes.append(f"{resolved} new model wordings settled")
+    _record_usage(repo, tenant_id, email_id, usage, since=calls_before)
 
     log.info(
         "processed tenant=%s message_id=%s side=%s rows=%d "
@@ -780,6 +806,12 @@ def _spec(row: TableRow) -> ProductSpec:
         capacity=row.capacity,
         ram=row.ram,
         part_number=row.part_number,
+        grade=row.grade,
+        region=row.region,
+        availability=row.availability,
+        # The brand column, or the section heading the row sits under. The description
+        # alone often abbreviates the maker away -- 'SAM S24 PLUS', 'PAD X9A-WIFI'.
+        brand=row.brand,
     )
 
 

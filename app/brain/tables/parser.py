@@ -52,6 +52,38 @@ _NON_PRODUCT = re.compile(
 )
 
 
+# Stock that has not arrived yet. Whitehawk titles a whole sheet 'INCOMING BRAND NEW
+# STOCK (ETA 7-15 DAYS)' and names the file the same way; other lists put an
+# 'Incoming' section heading above the lines in transit. Read from titles, section
+# headings and the file name only -- never the header row, where 'Incoming' is a
+# quantity column.
+_INCOMING = re.compile(
+    r"\b(?:incoming|in[\s-]?transit|arriving|on\s+the\s+way|pre[\s-]?orders?|"
+    r"coming\s+soon|future\s+stock|eta)\b",
+    re.IGNORECASE,
+)
+_IN_STOCK = re.compile(
+    r"\b(?:in\s+stock|ready\s+stock|available\s+now|ex[\s-]?stock|on\s+hand|warehouse\s+stock)\b",
+    re.IGNORECASE,
+)
+_ETA = re.compile(
+    r"\beta\b[\s:.\-]*(?P<eta>[0-9][^()\n]{0,30}?(?:days?|weeks?|wks?)\b|[^()\n]{1,30})",
+    re.IGNORECASE,
+)
+
+
+def _availability_of(text: str | None) -> tuple[str | None, str | None]:
+    """('incoming', 'ETA 7-15 DAYS') for a title or heading that says so; else Nones."""
+    if not text:
+        return None, None
+    flat = text.replace("_", " ")
+    if not _INCOMING.search(flat):
+        return None, None
+    match = _ETA.search(flat)
+    note = f"ETA {match.group('eta').strip(' -:.')}" if match else None
+    return "incoming", note
+
+
 # Given a header row and a handful of sample rows, name the columns — or decline.
 # Implemented by app.brain.llm.columns; anything with this shape will do.
 ColumnMapper = Callable[[list[str], list[list[str]]], "ColumnMap | None"]
@@ -73,6 +105,15 @@ class TableRow:
     # None when it named the seller's own article number. Kept apart because only one
     # of the two qualifies identity.
     part_number: str | None = None
+    # Raw cell text from a 'Grade' and a 'Spec' column. Both are part of what a lot is:
+    # the same model in grade A and grade C is two offers at two prices.
+    grade: str | None = None
+    region: str | None = None
+    # 'incoming' for stock still in transit, with the supplier's own words about when
+    # ('ETA 7-15 DAYS'). In-stock and incoming lots of one product are different
+    # offers: a buyer who needs goods this week cannot be sold next month's.
+    availability: str | None = None
+    availability_note: str | None = None
     quantity: int | None = None
     price: float | None = None
     currency: str | None = None
@@ -179,7 +220,21 @@ def parse_grid(
     if not column_map.is_usable:
         return ParsedTable(source=grid.source, column_map=column_map, needs_column_mapping=True)
 
+    if column_map.currency is None and column_map.other_prices:
+        _resolve_bare_price_column(grid.rows[header_index + 1 :], column_map, decimal_hint)
+
     currency = column_map.currency or default_currency
+
+    # A title above the header, or the file and sheet name, can say the whole sheet is
+    # stock in transit. Section headings below can change that for the rows under them.
+    sheet_availability: tuple[str | None, str | None] = (None, None)
+    for text in [grid.source, *(" ".join(r) for r in grid.rows[: max(header_index, 0)])]:
+        found = _availability_of(text)
+        if found[0]:
+            sheet_availability = found
+            if found[1]:
+                break
+    availability = sheet_availability
 
     rows: list[TableRow] = []
     section: str | None = None
@@ -189,6 +244,11 @@ def parse_grid(
         heading = _as_section_heading(raw)
         if heading is not None:
             section = heading
+            found = _availability_of(heading)
+            if found[0]:
+                availability = found
+            elif _IN_STOCK.search(heading):
+                availability = (None, None)
             continue
 
         # GOtel reprints its header every few rows as a visual separator. Parsed as
@@ -201,6 +261,7 @@ def parse_grid(
         if row is None:
             skipped += 1
             continue
+        row.availability, row.availability_note = availability
         rows.append(row)
 
     return ParsedTable(rows=rows, column_map=column_map, source=grid.source, skipped_rows=skipped)
@@ -273,6 +334,8 @@ def _build_row(
         colour=cell("colour") or None,
         capacity=cell("capacity") or None,
         ram=cell("ram") or None,
+        grade=cell("grade") or None,
+        region=cell("region") or None,
         quantity=quantity,
         price=price,
         currency=row_currency,
@@ -293,6 +356,85 @@ def _build_row(
         source_ref=f"{source} row {line_number}",
         warnings=warnings,
     )
+
+
+# Rough bands for the ratio between two currencies, wide enough to survive a year of
+# rate movement and narrow enough that no two overlap for the same pair. Used only to
+# recognise which currency an unlabelled price column is in, never to convert a price.
+_RATE_BANDS: dict[tuple[str, str], tuple[float, float]] = {
+    ("GBP", "EUR"): (1.10, 1.30), ("GBP", "USD"): (1.18, 1.45),
+    ("EUR", "USD"): (1.00, 1.25), ("EUR", "GBP"): (0.77, 0.91),
+    ("USD", "EUR"): (0.80, 1.00), ("USD", "GBP"): (0.69, 0.85),
+}
+
+
+def _resolve_bare_price_column(
+    body: list[list[str]], column_map: ColumnMap, decimal_hint: str | None
+) -> None:
+    """Decide the currency of a price column headed only 'Price'.
+
+    Whitehawk's sheet is 'Price | Euro | USD$': three columns for one price, and only
+    the first unlabelled. The other two are its conversions, so the ratio between them
+    says which currency the first is in -- 985 beside 1172.15 EUR and 1329.75 USD is
+    sterling, and nothing else fits both. Reading 'USD$' as the currency of the whole
+    header, as before, put a dollar sign on every pound price in the list.
+
+    A labelled column equal to the bare one names it outright. When the ratios do not
+    single out one currency, the bare column is abandoned for a labelled one: a price
+    the supplier stated in a named currency beats a guess about an unnamed one.
+    """
+    price_index = column_map.get("price")
+    if price_index is None:
+        return
+
+    ratios: dict[str, list[float]] = {}
+    for raw in body[:80]:
+        if price_index >= len(raw):
+            continue
+        cell = raw[price_index]
+        base = parse_price(cell, decimal_hint=decimal_hint) if cell else None
+        if not base or base <= 0:
+            continue
+        for code, index in column_map.other_prices.items():
+            if index < len(raw) and raw[index]:
+                other = parse_price(raw[index], decimal_hint=decimal_hint)
+                if other and other > 0:
+                    ratios.setdefault(code, []).append(other / base)
+
+    medians: dict[str, float] = {}
+    for code, values in ratios.items():
+        if len(values) < 2:
+            continue
+        values.sort()
+        median = values[len(values) // 2]
+        # Formula-built conversions are one constant ratio. A scattered ratio means the
+        # columns are not conversions of each other, and they say nothing.
+        if values[-1] / values[0] <= 1.03:
+            medians[code] = median
+
+    for code, median in medians.items():
+        if abs(median - 1.0) <= 0.01:
+            column_map.currency = code
+            return
+
+    if medians:
+        fits = [
+            candidate
+            for candidate in ("GBP", "EUR", "USD")
+            if candidate not in column_map.other_prices
+            and all(
+                (candidate, code) in _RATE_BANDS
+                and _RATE_BANDS[(candidate, code)][0] <= median <= _RATE_BANDS[(candidate, code)][1]
+                for code, median in medians.items()
+            )
+        ]
+        if len(fits) == 1:
+            column_map.currency = fits[0]
+            return
+
+    code, index = next(iter(column_map.other_prices.items()))
+    column_map.columns["price"] = index
+    column_map.currency = code
 
 
 def _sample(rows: list[list[str]], start: int, count: int = 5) -> list[list[str]]:
