@@ -1,6 +1,8 @@
 import { useEffect, useState } from "react";
 
 import { fetchReviewQueue, resolveEmail, type ReviewItem } from "../lib/api";
+import { EmailDrawer } from "./EmailDrawer";
+import { HeldQueue } from "./HeldQueue";
 import { ImportQueue } from "./ImportQueue";
 
 /**
@@ -83,6 +85,8 @@ export function ReviewQueue({ onResolved }: { onResolved: () => void }) {
 
   return (
     <>
+      <HeldQueue onChanged={onResolved} />
+
       <h3 className="section">Price lists</h3>
       <ImportQueue onChanged={onResolved} />
 
@@ -98,6 +102,7 @@ function ReviewCard({ item, onDone }: { item: ReviewItem; onDone: () => void }) 
   const [busy, setBusy] = useState(false);
   const [problem, setProblem] = useState<string | null>(null);
   const [done, setDone] = useState<string | null>(null);
+  const [reading, setReading] = useState(false);
 
   const needsSupplier = item.needs_sender_review;
   const needsSide = item.needs_classification;
@@ -138,6 +143,9 @@ function ReviewCard({ item, onDone }: { item: ReviewItem; onDone: () => void }) 
             {new Date(item.received_at).toLocaleString()}
             {item.attachment_count > 0 && ` · ${item.attachment_count} attachment(s)`}
           </div>
+          <button className="link open-email" onClick={() => setReading(true)}>
+            Open the email
+          </button>
         </div>
         <span className={`reason ${item.reason}`}>{describe(item.reason)}</span>
       </div>
@@ -184,6 +192,10 @@ function ReviewCard({ item, onDone }: { item: ReviewItem; onDone: () => void }) 
         <button className="resolve" disabled={!ready || busy} onClick={() => void submit()}>
           {busy ? "Reading the email…" : "File it and read the stock"}
         </button>
+      )}
+
+      {reading && (
+        <EmailDrawer emailId={item.id} title={item.subject} onClose={() => setReading(false)} />
       )}
     </div>
   );

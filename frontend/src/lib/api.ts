@@ -299,6 +299,7 @@ export async function updateSupplier(
 
 export interface PendingImport {
   id: string;
+  email_id?: string | null;
   counterparty_name: string | null;
   subject: string | null;
   received_at: string | null;
@@ -361,6 +362,59 @@ export async function fixRow(
   return json(
     await authorised(`/review/rows/${encodeURIComponent(id)}`, patch, "PATCH"),
     "Saving",
+  );
+}
+
+// ---------------------------------------------------------------- held lists
+
+export interface HeldImport {
+  id: string;
+  email_id: string | null;
+  counterparty_id: string | null;
+  counterparty_name: string | null;
+  side: string | null;
+  row_count: number;
+  difference_summary: string | null;
+  reason: string | null;
+  created_at: string | null;
+}
+
+export interface HeldChange {
+  kind: "appeared" | "vanished" | "price" | "quantity" | "unchanged";
+  identity_key: string;
+  description: string;
+  quantity: number | null;
+  unit_price: number | null;
+  currency: string | null;
+  previous_quantity: number | null;
+  previous_price: number | null;
+  price_move: number | null;
+}
+
+export interface HeldDetail extends HeldImport {
+  changes: HeldChange[];
+  counts: Record<string, number>;
+}
+
+export async function fetchHeldImports(): Promise<{ items: HeldImport[]; waiting: number }> {
+  return json(await authorised("/review/held"), "Loading held lists");
+}
+
+export async function fetchHeldImport(id: string): Promise<HeldDetail> {
+  return json(await authorised(`/review/held/${encodeURIComponent(id)}`), "Loading the list");
+}
+
+export async function resolveHeld(
+  id: string,
+  resolution: "same" | "new" | "partial",
+  identityKeys: string[] = [],
+): Promise<{ applied: number; refreshed: number; closed: number; note: string }> {
+  return json(
+    await authorised(`/review/held/${encodeURIComponent(id)}/resolve`, {
+      resolution,
+      identity_keys: identityKeys,
+    }),
+    "Applying",
   );
 }
 

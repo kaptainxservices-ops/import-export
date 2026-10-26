@@ -110,6 +110,8 @@ class PendingImportOut(BaseModel):
     """
 
     id: str
+    # The email the list came from, so it can be opened before the list is judged.
+    email_id: str | None = None
     counterparty_name: str | None
     subject: str | None
     received_at: str | None
@@ -299,6 +301,7 @@ def _pending(row: dict) -> PendingImportOut:
 
     return PendingImportOut(
         id=row["id"],
+        email_id=row.get("email_id"),
         counterparty_name=counterparty.get("name") or counterparty.get("primary_email"),
         subject=email.get("subject"),
         received_at=email.get("received_at"),
@@ -450,6 +453,7 @@ class HeldChangeOut(BaseModel):
 
 class HeldImportOut(BaseModel):
     id: str
+    email_id: str | None = None
     counterparty_id: str | None = None
     counterparty_name: str | None = None
     side: str | None = None
@@ -522,6 +526,7 @@ def held_imports(
         items.append(
             HeldImportOut(
                 id=row["id"],
+                email_id=row.get("email_id"),
                 counterparty_id=row.get("counterparty_id"),
                 counterparty_name=counterparty.get("name") or counterparty.get(
                     "primary_email"
@@ -564,6 +569,7 @@ def held_import(import_id: str, context=Depends(current_tenant)) -> HeldDetailOu
 
     return HeldDetailOut(
         id=record["id"],
+        email_id=record.get("email_id"),
         counterparty_id=record.get("counterparty_id"),
         counterparty_name=counterparty.get("name") or counterparty.get("primary_email"),
         side=record.get("side"),

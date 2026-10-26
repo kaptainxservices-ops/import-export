@@ -82,6 +82,8 @@ def test_the_queue_lists_what_is_waiting(client, held):
     assert item["side"] == "sell"
     assert item["difference_summary"]
     assert item["reason"]
+    # So the dashboard can open the email before anyone decides.
+    assert item["email_id"]
 
 
 def test_the_detail_view_is_the_diff(client, held):

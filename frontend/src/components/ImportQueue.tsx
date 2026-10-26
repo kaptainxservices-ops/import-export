@@ -10,6 +10,7 @@ import {
   type PendingImport,
 } from "../lib/api";
 import { money } from "../lib/money";
+import { EmailDrawer } from "./EmailDrawer";
 
 /**
  * Review at the level of the list, not the row.
@@ -81,6 +82,7 @@ function ImportCard({ item, onDone }: { item: PendingImport; onDone: () => void 
   const [reviewing, setReviewing] = useState(false);
   const [problem, setProblem] = useState<string | null>(null);
   const [outcome, setOutcome] = useState<string | null>(null);
+  const [reading, setReading] = useState(false);
 
   const clean = item.rows_parsed - item.flagged;
 
@@ -107,6 +109,11 @@ function ImportCard({ item, onDone }: { item: PendingImport; onDone: () => void 
             {item.subject ?? "no subject"}
             {item.received_at && ` · ${new Date(item.received_at).toLocaleString()}`}
           </div>
+          {item.email_id && (
+            <button className="link open-email" onClick={() => setReading(true)}>
+              Open the email
+            </button>
+          )}
         </div>
         <span className={`reason ${item.verdict}`} title={item.verdict_reason}>
           {item.verdict === "healthy"
@@ -176,6 +183,14 @@ function ImportCard({ item, onDone }: { item: PendingImport; onDone: () => void 
 
       {reviewing && <FlaggedRows importId={item.id} />}
       {problem && <p className="error small">{problem}</p>}
+
+      {reading && item.email_id && (
+        <EmailDrawer
+          emailId={item.email_id}
+          title={item.subject}
+          onClose={() => setReading(false)}
+        />
+      )}
     </div>
   );
 }

@@ -1388,3 +1388,155 @@ h3.section:first-child { margin-top: 0; }
     transition-duration: 0.01ms !important;
   }
 }
+
+/* ---------------------------------------------------------------- the email itself */
+
+.open-email {
+  margin-top: 6px;
+  font-size: 13px;
+}
+
+.email-tabs {
+  display: flex;
+  gap: 2px;
+  margin: 4px 0 14px;
+  border-bottom: 1px solid var(--line);
+  overflow-x: auto;
+}
+
+.email-tab {
+  position: relative;
+  flex: none;
+  padding: 8px 12px;
+  border: none;
+  background: none;
+  color: var(--muted);
+  font-weight: 500;
+  white-space: nowrap;
+  max-width: 260px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.email-tab:hover { color: var(--ink-2); }
+.email-tab.on { color: var(--brand); font-weight: 600; }
+
+.email-tab.on::after {
+  content: "";
+  position: absolute;
+  left: 10px;
+  right: 10px;
+  bottom: -1px;
+  height: 2px;
+  background: var(--globe);
+}
+
+.email-tab-count {
+  margin-left: 6px;
+  padding: 0 6px;
+  border-radius: 999px;
+  background: var(--panel);
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.email-html {
+  width: 100%;
+  height: 62vh;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: #fff;
+}
+
+.sheet-scroll {
+  max-height: 64vh;
+  overflow: auto;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+}
+
+.sheet {
+  border-collapse: collapse;
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.sheet td,
+.sheet th {
+  padding: 4px 9px;
+  border-bottom: 1px solid var(--line);
+  border-right: 1px solid var(--line);
+  text-align: left;
+}
+
+.sheet th {
+  position: sticky;
+  left: 0;
+  background: var(--panel);
+  color: var(--faint);
+  font-weight: 500;
+  text-align: right;
+}
+
+.sheet tr:nth-child(even) td { background: #fafbfe; }
+
+/* ---------------------------------------------------------------- held lists */
+
+.held-changes {
+  display: grid;
+  gap: 8px;
+  margin: 12px 0 4px;
+}
+
+.held-group {
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  padding: 8px 12px;
+}
+
+.held-group summary {
+  cursor: pointer;
+  font-weight: 600;
+  font-size: 13px;
+}
+
+.held-group.vanished summary { color: var(--danger); }
+.held-group.appeared summary { color: var(--ok); }
+
+.held-table {
+  width: 100%;
+  margin-top: 6px;
+  border-collapse: collapse;
+  font-size: 12.5px;
+}
+
+.held-table td {
+  padding: 4px 6px;
+  border-top: 1px solid var(--line);
+  vertical-align: middle;
+}
+
+.held-tick { width: 26px; }
+.held-tick input { padding: 0; }
+
+.held-desc {
+  max-width: 360px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.held-answers {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-top: 14px;
+}
+
+.resolve.quiet {
+  background: var(--bg);
+  color: var(--brand);
+  border: 1px solid var(--accent-line);
+}
+
+.resolve.quiet:hover:not([disabled]) { background: var(--accent-soft); }
