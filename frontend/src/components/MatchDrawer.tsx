@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 
-import { findMatches, type Matches, type MatchOption } from "../lib/api";
+import { findMatches, type Matches, type MatchOption, type OptionNote } from "../lib/api";
 import { money } from "../lib/money";
 import type { Offer } from "../lib/types";
 
@@ -262,10 +262,91 @@ function Option({
 
       {/* Relaxations and warnings are shown, never hidden. A near-miss is a phone call,
           and a cross-border combination is a margin that freight may eat. */}
-      {[...option.relaxed, ...option.warnings].map((note, i) => (
-        <p key={i} className="note">
-          {note}
-        </p>
+      <OptionDetails option={option} direction={direction} />
+    </div>
+  );
+}
+
+const NOTE_GROUPS: { kind: OptionNote["kind"]; title: string }[] = [
+  { kind: "check", title: "Check before quoting" },
+  { kind: "risk", title: "Deal risk" },
+  { kind: "margin", title: "Margin" },
+];
+
+function sentence(text: string): string {
+  return text ? text.charAt(0).toUpperCase() + text.slice(1) : text;
+}
+
+/**
+ * What differs, and what to know, laid out rather than listed.
+ *
+ * Three different kinds of thing used to arrive as one run of orange sentences: how a
+ * near miss differs from the order, what to settle about the lot before quoting, and why
+ * no margin is shown. Read together they blur — 'capacity NoneGB, wanted 128GB' sat next
+ * to 'buyer stated no price' as though both were faults of the lot. So the differences
+ * are a two-column comparison, seller's lot against the buyer's order, and every note
+ * sits under a heading saying what it is about.
+ */
+function OptionDetails({ option, direction }: { option: MatchOption; direction: string }) {
+  const differences = option.differences ?? [];
+  const notes = option.notes ?? [];
+
+  // An older backend sends only the plain lists. Show them as they were.
+  if (!option.differences && !option.notes) {
+    return (
+      <>
+        {[...option.relaxed, ...option.warnings].map((note, i) => (
+          <p key={i} className="note">
+            {note}
+          </p>
+        ))}
+      </>
+    );
+  }
+
+  const groups = NOTE_GROUPS.map((group) => ({
+    ...group,
+    items: notes.filter((note) => note.kind === group.kind),
+  })).filter((group) => group.items.length > 0);
+
+  if (differences.length === 0 && groups.length === 0) return null;
+
+  return (
+    <div className="option-details">
+      {differences.length > 0 && (
+        <table className="diff">
+          <thead>
+            <tr>
+              <th>Differs</th>
+              <th>{direction === "fill" ? "Seller has" : "This lot"}</th>
+              <th>Buyer wants</th>
+            </tr>
+          </thead>
+          <tbody>
+            {differences.map((d, i) => (
+              <tr key={i}>
+                <th scope="row">{d.label}</th>
+                <td className="offered" title={d.offered}>
+                  {d.offered}
+                </td>
+                <td className="wanted" title={d.wanted}>
+                  {d.wanted}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
+
+      {groups.map((group) => (
+        <div key={group.kind} className={`note-group ${group.kind}`}>
+          <div className="note-title">{group.title}</div>
+          <ul>
+            {group.items.map((note, i) => (
+              <li key={i}>{sentence(note.text)}</li>
+            ))}
+          </ul>
+        </div>
       ))}
     </div>
   );

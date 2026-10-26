@@ -35,6 +35,23 @@ export interface MatchOption {
   margin_pct: number | null;
   relaxed: string[];
   warnings: string[];
+  /** A near miss, as a comparison: what the seller's lot is against what was asked. */
+  differences?: Difference[];
+  /** Every note, sorted by what it is about. */
+  notes?: OptionNote[];
+}
+
+export interface Difference {
+  field: string;
+  label: string;
+  offered: string;
+  wanted: string;
+}
+
+export interface OptionNote {
+  /** check: settle before quoting · margin: why there is no margin · risk: deal risk */
+  kind: "check" | "margin" | "risk";
+  text: string;
 }
 
 export interface Matches {

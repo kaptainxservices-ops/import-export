@@ -823,6 +823,72 @@ main {
   color: var(--warn);
 }
 
+/* What differs and what to know, under one rule so it reads as one block. */
+.option-details {
+  margin-top: 12px;
+  padding-top: 10px;
+  border-top: 1px solid var(--line);
+  display: grid;
+  gap: 10px;
+  font-size: 12.5px;
+}
+
+.diff {
+  width: 100%;
+  border-collapse: collapse;
+  table-layout: fixed;
+  background: var(--warn-soft);
+  border: 1px solid var(--warn-line);
+  border-radius: var(--radius-sm);
+  overflow: hidden;
+}
+
+.diff th,
+.diff td {
+  padding: 5px 10px;
+  text-align: left;
+  vertical-align: top;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.diff thead th {
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--muted);
+  border-bottom: 1px solid var(--warn-line);
+}
+
+.diff thead th:first-child,
+.diff tbody th { width: 22%; }
+
+.diff tbody th { font-weight: 600; color: var(--ink-2); }
+.diff tbody tr + tr > * { border-top: 1px solid var(--warn-line); }
+.diff .offered { color: var(--warn); font-weight: 600; }
+.diff .wanted { color: var(--ink-2); }
+
+.note-group .note-title {
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--muted);
+  margin-bottom: 3px;
+}
+
+.note-group ul {
+  margin: 0;
+  padding-left: 18px;
+}
+
+.note-group li { margin: 1px 0; font-weight: 400; }
+.note-group.check li { color: var(--warn); }
+.note-group.risk li { color: var(--danger); }
+.note-group.margin li { color: var(--ink-2); }
+
 /* ---------------------------------------------------------------- quoting */
 
 .quote-bar {

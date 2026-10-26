@@ -167,6 +167,35 @@ class Allocation:
     description: str
 
 
+@dataclass(frozen=True)
+class Difference:
+    """One way a lot is not what the buyer asked for: what they have, what was wanted.
+
+    Structured so the dashboard can lay the differences out as a comparison rather than
+    a run of sentences. `text` is the same thing as one line, for everything that still
+    reads `relaxed`.
+    """
+
+    field: str        # 'model' | 'capacity' | 'colour' | 'grade' | 'spec' | 'ram' | ...
+    label: str        # 'Capacity'
+    offered: str      # what the seller's lot is
+    wanted: str       # what the buyer asked for
+    text: str
+
+
+@dataclass(frozen=True)
+class Note:
+    """Something a trader must know about an option, sorted by what it is about.
+
+    'check'  -- about the lot itself, to settle before quoting (incoming, graded, no price)
+    'margin' -- why the margin cannot be computed (no buyer price, two currencies)
+    'risk'   -- about executing the deal (several countries)
+    """
+
+    kind: str
+    text: str
+
+
 @dataclass
 class MatchOption:
     kind: MatchKind
@@ -183,6 +212,9 @@ class MatchOption:
 
     relaxed: list[str] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
+    # The same information, structured: `relaxed` as a comparison, `warnings` by kind.
+    differences: list[Difference] = field(default_factory=list)
+    notes: list[Note] = field(default_factory=list)
     score: float = 0.0
 
     @property
@@ -244,7 +276,8 @@ def fill_requirement(
         for item in near:
             option = _single(requirement, item)
             option.kind = "near_miss"
-            option.relaxed = _relaxations(requirement, item)
+            option.differences = _relaxations(requirement, item)
+            option.relaxed = [d.text for d in option.differences]
             options.append(option)
 
     for option in options:
@@ -280,7 +313,8 @@ def place_offer(
     options: list[MatchOption] = []
     for buyer in interested:
         option = _single_placement(buyer, offer)
-        option.warnings.extend(_lot_notes(buyer, offer))
+        for note in _lot_notes(buyer, offer):
+            _note(option, "check", note)
         options.append(option)
 
     remaining = offer.quantity or 0
@@ -330,9 +364,11 @@ def place_offer(
             total_margin=(
                 None if mismatch or offer.unit_price is None else round(revenue - cost, 2)
             ),
-            warnings=(["currencies differ; margin not computed"] if mismatch else [])
-            + lot_notes,
         )
+        if mismatch:
+            _note(split, "margin", "buyers quote in a different currency from the seller")
+        for note in lot_notes:
+            _note(split, "check", note)
         options.append(split)
 
     for option in options:
@@ -376,14 +412,25 @@ def _single(requirement: Requirement, item: Supply) -> MatchOption:
         total_margin=total_margin,
     )
 
-    if mismatch:
-        option.warnings.append(
-            f"buyer quotes {requirement.currency}, seller quotes {item.currency}; "
-            f"margin not computed"
-        )
+    # One sentence about the margin, not two. A buyer who named no price has no margin
+    # whatever the currencies; the currencies are then worth knowing for the quote.
     if requirement.unit_price is None:
-        option.warnings.append("buyer stated no price; margin unknown")
-    option.warnings.extend(_lot_notes(requirement, item))
+        _note(
+            option, "margin",
+            "buyer stated no price"
+            + (
+                f"; their list is in {requirement.currency}, the seller's in {item.currency}"
+                if mismatch else ""
+            ),
+        )
+    elif mismatch:
+        _note(
+            option, "margin",
+            f"buyer pays in {requirement.currency}, seller charges in {item.currency}; "
+            "margin not computed, no exchange rate is assumed",
+        )
+    for note in _lot_notes(requirement, item):
+        _note(option, "check", note)
 
     return option
 
@@ -426,9 +473,10 @@ def _single_placement(buyer: Requirement, offer: Supply) -> MatchOption:
     )
 
     if mismatch:
-        option.warnings.append(
-            f"buyer quotes {buyer.currency}, seller quotes {offer.currency}; "
-            f"margin not computed"
+        _note(
+            option, "margin",
+            f"buyer pays in {buyer.currency}, seller charges in {offer.currency}; "
+            "margin not computed, no exchange rate is assumed",
         )
 
     return option
@@ -573,18 +621,26 @@ def _build_combination(requirement: Requirement, group: tuple[Supply, ...]) -> M
 
     countries = {s.country for s in group if s.country}
     if len(countries) > 1:
-        option.warnings.append(
+        _note(
+            option, "risk",
             f"crosses {len(countries)} countries ({', '.join(sorted(countries))}); "
-            f"freight and duty can erode the apparent gain"
+            f"freight and duty can erode the apparent gain",
         )
     if mismatch:
-        option.warnings.append("suppliers quote different currencies; margin not computed")
+        _note(option, "margin", "suppliers quote different currencies; margin not computed")
     for item in group:
         for note in _lot_notes(requirement, item):
-            if note not in option.warnings:
-                option.warnings.append(note)
+            _note(option, "check", note)
 
     return option
+
+
+def _note(option: MatchOption, kind: str, text: str) -> None:
+    """Record a note once, in both shapes."""
+    if text in option.warnings:
+        return
+    option.warnings.append(text)
+    option.notes.append(Note(kind, text))
 
 
 # ---------------------------------------------------------------- comparison
@@ -690,37 +746,57 @@ def _grade_key(value: str | None) -> str:
     return re.sub(r"[\s_\-]+", "", (value or "").lower())
 
 
-def _differences(requirement: Requirement, item: Supply) -> list[str]:
+def _gb(value: int | None) -> str:
+    return f"{value}GB" if value else "not stated"
+
+
+def _said(value: str | None) -> str:
+    return value if value else "not stated"
+
+
+def _differences(requirement: Requirement, item: Supply) -> list[Difference]:
     """Everything about this lot that is not what the buyer asked for, in words.
 
     Each check runs only when both sides state the attribute. A buyer who wrote 'S23'
     has not refused a 5G handset, and a list that does not mention its market has not
     claimed one -- an unknown is not a mismatch, it is something to ask about.
     """
-    out: list[str] = []
+    out: list[Difference] = []
+
+    def add(name: str, label: str, offered: str, wanted: str, text: str) -> None:
+        out.append(Difference(name, label, offered, wanted, text))
 
     # One barcode is one capacity and one finish, whatever either line omitted.
     same_barcode = bool(requirement.ean and item.ean and requirement.ean == item.ean)
     if not same_barcode:
         if requirement.capacity_gb != item.capacity_gb:
-            out.append(f"capacity {item.capacity_gb}GB, wanted {requirement.capacity_gb}GB")
+            offered, wanted = _gb(item.capacity_gb), _gb(requirement.capacity_gb)
+            add("capacity", "Capacity", offered, wanted, f"capacity {offered}, wanted {wanted}")
         if not _colour_ok(requirement, item):
-            out.append(f"colour {item.colour}, wanted {requirement.colour}")
+            offered, wanted = _said(item.colour), _said(requirement.colour)
+            if requirement.accepted_colours:
+                wanted = " / ".join(requirement.accepted_colours)
+            add("colour", "Colour", offered, wanted, f"colour {offered}, wanted {wanted}")
 
     if requirement.grade and item.grade:
         if _grade_key(requirement.grade) != _grade_key(item.grade):
-            out.append(f"grade {item.grade}, wanted {requirement.grade}")
+            add("grade", "Grade", item.grade, requirement.grade,
+                f"grade {item.grade}, wanted {requirement.grade}")
     elif requirement.wants_new and item.grade and _grade_key(item.grade) not in ("new", "bnib"):
-        out.append(f"grade {item.grade} (graded stock), wanted new")
+        add("grade", "Grade", f"{item.grade} (graded)", "new",
+            f"grade {item.grade} (graded stock), wanted new")
 
     if regions_conflict(requirement.region_code, item.region_code):
-        out.append(f"spec {item.region_code}, wanted {requirement.region_code}")
+        add("spec", "Spec", item.region_code or "", requirement.region_code or "",
+            f"spec {item.region_code}, wanted {requirement.region_code}")
 
     if requirement.ram_gb and item.ram_gb and requirement.ram_gb != item.ram_gb:
-        out.append(f"{item.ram_gb}GB RAM, wanted {requirement.ram_gb}GB")
+        add("ram", "RAM", f"{item.ram_gb}GB", f"{requirement.ram_gb}GB",
+            f"{item.ram_gb}GB RAM, wanted {requirement.ram_gb}GB")
 
     if requirement.network and item.network and requirement.network != item.network:
-        out.append(f"{item.network.upper()}, wanted {requirement.network.upper()}")
+        add("network", "Network", item.network.upper(), requirement.network.upper(),
+            f"{item.network.upper()}, wanted {requirement.network.upper()}")
 
     if (
         requirement.connectivity
@@ -728,13 +804,15 @@ def _differences(requirement: Requirement, item: Supply) -> list[str]:
         and requirement.connectivity != item.connectivity
         and (requirement.category or item.category) in ("tablet", "wearable")
     ):
-        out.append(f"{item.connectivity}, wanted {requirement.connectivity}")
+        add("connectivity", "Connectivity", item.connectivity, requirement.connectivity,
+            f"{item.connectivity}, wanted {requirement.connectivity}")
 
     wanted_edition = (requirement.edition or "").lower()
     offered_edition = (item.edition or "").lower()
     if "enterprise" in (wanted_edition + offered_edition) and wanted_edition != offered_edition:
         offered = item.edition or "standard edition"
-        out.append(f"{offered}, wanted {requirement.edition or 'standard'}")
+        wanted = requirement.edition or "standard"
+        add("edition", "Edition", offered, wanted, f"{offered}, wanted {wanted}")
 
     return out
 
@@ -845,10 +923,13 @@ def _is_near(requirement: Requirement, item: Supply) -> bool:
     return 0 < differences <= 2
 
 
-def _relaxations(requirement: Requirement, item: Supply) -> list[str]:
-    out = []
+def _relaxations(requirement: Requirement, item: Supply) -> list[Difference]:
+    out: list[Difference] = []
     if _product_relation(requirement, item) == "close":
-        out.append(f"listed as '{item.description}'; check it is the same model")
+        out.append(Difference(
+            "model", "Model", item.description, requirement.description,
+            f"listed as '{item.description}'; check it is the same model",
+        ))
     out.extend(_differences(requirement, item))
     return out
 

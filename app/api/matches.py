@@ -51,6 +51,18 @@ class AllocationOut(BaseModel):
     description: str
 
 
+class DifferenceOut(BaseModel):
+    field: str
+    label: str
+    offered: str
+    wanted: str
+
+
+class NoteOut(BaseModel):
+    kind: str = Field(description="'check' | 'margin' | 'risk'")
+    text: str
+
+
 class OptionOut(BaseModel):
     kind: str
     allocations: list[AllocationOut]
@@ -65,6 +77,11 @@ class OptionOut(BaseModel):
     margin_pct: float | None
     relaxed: list[str]
     warnings: list[str]
+    # The two lists above, structured for display: a near miss as a comparison of what
+    # the seller has against what the buyer wants, and every note sorted by what it is
+    # about. The plain lists stay for anything still reading them.
+    differences: list[DifferenceOut] = []
+    notes: list[NoteOut] = []
 
 
 class MatchesOut(BaseModel):
@@ -525,4 +542,9 @@ def _option(option: MatchOption, names: dict[str, str]) -> OptionOut:
         margin_pct=option.margin_pct,
         relaxed=option.relaxed,
         warnings=option.warnings,
+        differences=[
+            DifferenceOut(field=d.field, label=d.label, offered=d.offered, wanted=d.wanted)
+            for d in option.differences
+        ],
+        notes=[NoteOut(kind=n.kind, text=n.text) for n in option.notes],
     )

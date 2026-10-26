@@ -6,6 +6,8 @@ tested is what the dashboard gets: a buyer's 'Samsung S23 128GB' against a suppl
 alias all in play.
 """
 
+from dataclasses import replace
+
 from app.api.matches import _requirement, _supply
 from app.brain.matching import fill_requirement, place_offer
 from app.db.models import BoardOffer
@@ -211,3 +213,28 @@ def test_an_unlabelled_line_beside_a_5g_line_of_the_same_model_is_the_4g_phone()
     options = fill_requirement(_requirement(want), supply)
     exact = {o.allocations[0].offer_id for o in options if o.kind == "exact"}
     assert exact == {"5"}
+
+
+def test_a_near_miss_is_a_comparison_and_notes_are_sorted_by_kind():
+    """What the drawer lays out: each difference as seller-has against buyer-wants, and
+    every note under what it is about. An unknown capacity reads 'not stated', never
+    'NoneGB'."""
+    want = row("w", "Samsung S24 FE 128GB Black", "buy", capacity=128, colour="Black",
+               qty=20)
+    want = replace(want, currency="EUR")
+    have = row("h", "SAM S24FE", "sell", brand="Samsung", colour="Graphite", qty=14,
+               price=295, grade="A", availability="incoming", note="ETA 7-15 DAYS")
+    _, near = fills(want, have)
+
+    assert [(d.label, d.offered, d.wanted) for d in near[0].differences] == [
+        ("Capacity", "not stated", "128GB"),
+        ("Colour", "Graphite", "Black"),
+    ]
+    assert near[0].relaxed == ["capacity not stated, wanted 128GB",
+                               "colour Graphite, wanted Black"]
+    kinds = {}
+    for n in near[0].notes:
+        kinds.setdefault(n.kind, []).append(n.text)
+    assert kinds["margin"] == ["buyer stated no price; their list is in EUR, the seller's in GBP"]
+    assert "incoming stock (ETA 7-15 DAYS)" in kinds["check"]
+    assert "seller's lot is grade A" in kinds["check"]
