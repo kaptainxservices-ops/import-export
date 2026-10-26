@@ -7,31 +7,45 @@
  * on a laptop, so the work is legibility rather than decoration — numbers that line up,
  * a clear hierarchy inside a row, and colour spent only where it carries meaning.
  * Freshness and margin are worth colour. Nothing else is.
+ *
+ * The palette is TVD's own, taken from their logo: the indigo of the lettering and the
+ * orbit arrows, and the cerulean of the globe. The indigo header band — with the globe's
+ * meridians drawn faintly behind it — is the one bold thing on the screen; everything
+ * below it stays quiet so the numbers can be read.
  */
 
 /* ---------------------------------------------------------------- tokens */
 
 :root {
-  /* A warm, paper-ish palette. This is a document somebody reads, not an app they
-     operate, and the cool blue-grey of a SaaS dashboard made every row feel like a
-     control. Ink on off-white, with colour spent only on freshness and money. */
-  --ink: #1a1a1a;
-  --ink-2: #3d3a35;
-  --muted: #8a837a;
-  --faint: #a8a29a;
+  /* TVD's two colours. Indigo is the brand and the primary action; cerulean is the
+     globe, used for focus, selection and the active tab. Links take a darker cerulean
+     so small text stays readable on white. */
+  --brand: #281c8a;
+  --brand-deep: #1d1468;
+  --globe: #1f89d4;
+  --globe-on-brand: #6cc0f5;
+  --link: #1468ae;
 
-  --line: #e8e4dd;
-  --line-2: #d9d4cb;
+  /* Ink with a little of the indigo in it, on a cool mist page. */
+  --ink: #151a3a;
+  --ink-2: #3b4266;
+  --muted: #747b98;
+  --faint: #a0a6bd;
+
+  --line: #e1e6f0;
+  --line-2: #cdd5e4;
 
   --bg: #ffffff;
-  --page: #fbfaf8;
-  --panel: #f6f4f0;
+  --page: #f3f6fb;
+  --panel: #f6f8fc;
 
-  /* Navy, used for the selected option's spine and for links. Reserved. */
-  --accent: #1e3a6f;
-  --accent-ink: #16294f;
-  --accent-soft: #eef2f9;
-  --accent-line: #c8d4e6;
+  /* The accent family is the brand indigo: the selected option's spine, primary
+     buttons, tags. */
+  --accent: #281c8a;
+  --accent-ink: #1d1468;
+  --accent-soft: #eeedfa;
+  --accent-line: #cfcbef;
+  --hover: #eef2fa;
 
   --ok: #1a6b47;
   --ok-soft: #edf5f0;
@@ -46,14 +60,17 @@
   --danger-soft: #fbf0ee;
   --danger-line: #e8c8c2;
 
-  --radius: 10px;
-  --radius-sm: 7px;
+  --radius: 12px;
+  --radius-sm: 8px;
   /* Flat by default. Depth is for things that float above the page — drawers — not for
      everything on it. */
   --shadow: none;
-  --shadow-lg: 0 16px 40px rgb(26 26 26 / 12%), 0 2px 8px rgb(26 26 26 / 6%);
+  --shadow-lg: 0 18px 44px rgb(21 26 58 / 16%), 0 2px 8px rgb(21 26 58 / 7%);
 
-  font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  --top-height: 60px;
+
+  font-family: "IBM Plex Sans", ui-sans-serif, system-ui, -apple-system, "Segoe UI",
+    Roboto, sans-serif;
   font-size: 14px;
   line-height: 1.5;
   color: var(--ink);
@@ -76,7 +93,15 @@ button { font: inherit; cursor: pointer; }
 
 h1, h2, h3 { letter-spacing: -0.011em; }
 
-::selection { background: #e8e0d0; }
+::selection { background: #d6e9f8; }
+
+/* Keyboard focus is always visible, and always the globe's blue. */
+button:focus-visible,
+a:focus-visible {
+  outline: 2px solid var(--globe);
+  outline-offset: 2px;
+  border-radius: 4px;
+}
 
 /* ---------------------------------------------------------------- primitives */
 
@@ -119,14 +144,14 @@ input:hover, select:hover { border-color: var(--muted); }
 
 input:focus, select:focus {
   outline: none;
-  border-color: var(--accent);
-  box-shadow: 0 0 0 3px rgb(30 58 111 / 11%);
+  border-color: var(--globe);
+  box-shadow: 0 0 0 3px rgb(31 137 212 / 18%);
 }
 
 .link {
   border: none;
   background: none;
-  color: var(--accent);
+  color: var(--link);
   padding: 0;
   font-weight: 500;
   text-decoration: none;
@@ -135,7 +160,7 @@ input:focus, select:focus {
 }
 
 .link:hover {
-  color: var(--accent-ink);
+  color: var(--brand);
   border-bottom-color: currentColor;
 }
 
@@ -169,13 +194,20 @@ input:focus, select:focus {
 }
 
 .login {
-  width: 350px;
+  width: 360px;
   display: flex;
   flex-direction: column;
   gap: 15px;
+  border-top: 4px solid var(--brand);
 }
 
-.login h1 { margin: 0; font-size: 21px; }
+.login-logo {
+  width: 96px;
+  height: auto;
+  margin-bottom: 2px;
+}
+
+.login h1 { margin: 0; font-size: 22px; color: var(--brand); }
 .login p { margin: 0; }
 
 .login label {
@@ -190,14 +222,14 @@ input:focus, select:focus {
   padding: 10px;
   border: none;
   border-radius: var(--radius-sm);
-  background: var(--accent);
+  background: var(--brand);
   color: white;
   font-weight: 600;
   box-shadow: var(--shadow);
   transition: background 0.12s ease;
 }
 
-.login button[type="submit"]:hover:not([disabled]) { background: var(--accent-ink); }
+.login button[type="submit"]:hover:not([disabled]) { background: var(--brand-deep); }
 .login button[disabled] { opacity: 0.6; cursor: default; }
 
 /* The shared demo credentials, when VITE_DEMO_EMAIL and VITE_DEMO_PASSWORD are set.
@@ -212,11 +244,9 @@ input:focus, select:focus {
 }
 .demo-title {
   margin: 0 0 10px;
-  font-size: 12px;
+  font-size: 13px;
   font-weight: 600;
-  letter-spacing: 0.04em;
-  text-transform: uppercase;
-  color: var(--muted);
+  color: var(--ink-2);
 }
 .demo-creds {
   display: grid;
@@ -241,60 +271,115 @@ input:focus, select:focus {
 
 /* ---------------------------------------------------------------- shell */
 
+/* The one bold thing on the screen: TVD's indigo, with the meridians and parallels of
+   the globe in their logo drawn faintly across the right-hand end. */
 .top {
   position: sticky;
   top: 0;
   z-index: 30;
   display: flex;
-  justify-content: space-between;
-  align-items: center;
-  gap: 24px;
+  align-items: stretch;
+  gap: 28px;
+  height: var(--top-height);
   padding: 0 24px;
-  background: rgb(255 255 255 / 88%);
-  backdrop-filter: saturate(1.6) blur(8px);
-  border-bottom: 1px solid var(--line);
+  color: #fff;
+  background-color: var(--brand);
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 400 400' fill='none' stroke='white' stroke-opacity='0.13' stroke-width='2'%3E%3Ccircle cx='200' cy='200' r='190'/%3E%3Cellipse cx='200' cy='200' rx='140' ry='190'/%3E%3Cellipse cx='200' cy='200' rx='80' ry='190'/%3E%3Cpath d='M200 10v380M10 200h380M28 130h344M28 270h344M72 70h256M72 330h256'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  /* Between the tabs and the account, so the lines never run behind any text. */
+  background-position: right 300px center;
+  background-size: 250px 250px;
+  box-shadow: 0 1px 0 var(--brand-deep);
 }
 
-/* Section names read as a line of prose separated by middots, not as a row of buttons.
-   The current one is simply the one in black. */
-.top nav { display: flex; align-items: center; gap: 0; padding: 15px 0; }
+.brand {
+  display: flex;
+  align-items: center;
+  gap: 11px;
+  flex: none;
+}
+
+/* The logo is blue and indigo on white; on the indigo band it needs its own ground. */
+.brand-plate {
+  display: grid;
+  place-items: center;
+  width: 58px;
+  height: 46px;
+  background: #fff;
+  border-radius: var(--radius-sm);
+}
+
+.brand-plate img { width: 50px; height: auto; display: block; }
+
+.brand-name {
+  font-size: 16px;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+  white-space: nowrap;
+}
+
+.top nav {
+  display: flex;
+  align-items: stretch;
+  gap: 2px;
+  min-width: 0;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
 
 .tab {
+  position: relative;
   border: none;
   background: none;
-  padding: 0 6px;
-  color: var(--muted);
+  padding: 0 13px;
+  color: rgb(255 255 255 / 70%);
   font-weight: 500;
   white-space: nowrap;
-  transition: color 0.12s ease;
+  transition: color 0.12s ease, background 0.12s ease;
 }
 
-.tab + .tab::before {
-  content: "·";
-  margin-right: 12px;
-  color: var(--line-2);
+.tab:hover { color: #fff; background: rgb(255 255 255 / 6%); }
+
+.tab.active { color: #fff; font-weight: 600; }
+
+/* The current section is underlined in the globe's blue, sitting on the band's edge. */
+.tab.active::after {
+  content: "";
+  position: absolute;
+  left: 11px;
+  right: 11px;
+  bottom: 0;
+  height: 3px;
+  border-radius: 3px 3px 0 0;
+  background: var(--globe-on-brand);
 }
 
-.tab:hover { color: var(--ink-2); }
-.tab.active { color: var(--ink); font-weight: 700; }
+.tab:focus-visible { outline-color: #fff; outline-offset: -4px; }
 
 .nav-count {
   display: inline-block;
   margin-left: 7px;
   padding: 1px 8px;
   border-radius: 999px;
-  background: var(--warn-soft);
-  color: var(--warn);
+  background: #ffd98f;
+  color: #5a3b00;
   font-size: 11px;
-  font-weight: 600;
+  font-weight: 700;
 }
 
 .account {
   display: flex;
   align-items: center;
-  gap: 14px;
+  gap: 16px;
+  margin-left: auto;
   font-size: 13px;
+  white-space: nowrap;
 }
+
+.account .muted { color: rgb(255 255 255 / 70%); }
+.account .link { color: #fff; }
+.account .link:hover { color: #fff; }
+.account .link:focus-visible { outline-color: #fff; }
 
 main {
   padding: 24px 24px 90px;
@@ -425,19 +510,17 @@ main {
 }
 
 .offers th {
-  /* Pins under the 53px-tall sticky top bar once the board scrolls past it. */
+  /* Pins under the sticky top bar once the board scrolls past it. */
   position: sticky;
-  top: 53px;
+  top: var(--top-height);
   z-index: 10;
   text-align: left;
   padding: 11px 14px;
   background: var(--panel);
   border-bottom: 1px solid var(--line);
   color: var(--muted);
-  font-size: 11px;
+  font-size: 12px;
   font-weight: 600;
-  text-transform: uppercase;
-  letter-spacing: 0.05em;
   white-space: nowrap;
 }
 
@@ -448,7 +531,7 @@ main {
 }
 
 .offers tbody tr { transition: background 0.1s ease; }
-.offers tbody tr:hover { background: var(--page); }
+.offers tbody tr:hover { background: var(--hover); }
 .offers tbody tr:last-child td { border-bottom: none; }
 
 .num { text-align: right; }
@@ -505,7 +588,7 @@ main {
 
 .age.today  { background: var(--ok-soft);     color: var(--ok);     }
 .age.recent { background: var(--warn-soft);   color: var(--warn);   }
-.age.stale  { background: #f2f4f7;            color: var(--muted);  }
+.age.stale  { background: #eef1f6;            color: var(--muted);  }
 
 /* Old rows fade; they are never removed. What a supplier was asking last month is what
    tells you whether today's number is good. */
@@ -535,7 +618,7 @@ main {
 
 .tile {
   padding: 17px 19px;
-  background: var(--panel);
+  background: var(--bg);
   border: 1px solid var(--line);
   border-radius: var(--radius);
 }
@@ -552,6 +635,7 @@ main {
   font-weight: 700;
   letter-spacing: -0.025em;
   line-height: 1.1;
+  color: var(--brand);
 }
 
 .tile-value.ok   { color: var(--ok); }
@@ -590,14 +674,14 @@ main {
 }
 
 .match-row:last-child { border-bottom: none; }
-.match-row:hover { background: var(--page); }
+.match-row:hover { background: var(--hover); }
 
 /* A fillable requirement is money on the table today. A short one is money that needs
    another phone call. The rest is demand nobody can currently serve — still worth
    seeing, which is why it dims rather than disappears. */
-.match-row.filled    { border-left-color: var(--accent); background: var(--panel); }
+.match-row.filled    { border-left-color: var(--globe); background: #f4f9fd; }
 .match-row.short     { border-left-color: var(--warn); }
-.match-row.filled:hover, .match-row.short:hover { background: #f2efe9; }
+.match-row.filled:hover, .match-row.short:hover { background: var(--hover); }
 .match-row.near_miss { border-left-color: var(--line-2); }
 .match-row.no_supply { opacity: 0.6; }
 
@@ -642,7 +726,7 @@ main {
 .match-options {
   margin-top: 2px;
   font-size: 12px;
-  color: var(--accent);
+  color: var(--link);
 }
 
 /* ---------------------------------------------------------------- drawers */
@@ -651,7 +735,7 @@ main {
   position: fixed;
   inset: 0;
   z-index: 50;
-  background: rgb(16 24 40 / 32%);
+  background: rgb(21 26 58 / 34%);
   backdrop-filter: blur(2px);
   display: flex;
   justify-content: flex-end;
@@ -663,7 +747,7 @@ main {
   height: 100%;
   padding: 22px 26px 72px;
   background: var(--bg);
-  border-left: 1px solid var(--line);
+  border-left: 4px solid var(--brand);
   box-shadow: var(--shadow-lg);
   overflow-y: auto;
   animation: slide 0.18s cubic-bezier(0.32, 0.72, 0, 1);
@@ -688,11 +772,9 @@ main {
 
 .drawer h3 {
   margin: 24px 0 6px;
-  font-size: 11px;
+  font-size: 13px;
   font-weight: 600;
-  text-transform: uppercase;
-  letter-spacing: 0.06em;
-  color: var(--muted);
+  color: var(--ink-2);
 }
 
 .close {
@@ -714,12 +796,12 @@ main {
 .subject-block {
   padding: 16px 18px;
   margin-bottom: 20px;
-  background: var(--panel);
-  border: 1px solid var(--line);
+  background: var(--accent-soft);
+  border: 1px solid var(--accent-line);
   border-radius: var(--radius);
 }
 
-.subject-block h2 { margin: 0 0 5px; font-size: 17px; }
+.subject-block h2 { margin: 0 0 5px; font-size: 17px; color: var(--brand); }
 .subject-block p { margin: 0; font-size: 13px; color: var(--muted); }
 .subject-block strong { color: var(--ink-2); }
 
@@ -773,7 +855,7 @@ main {
   transition: border-color 0.12s ease, box-shadow 0.12s ease;
 }
 
-.option:hover { border-color: var(--line-2); box-shadow: var(--shadow); }
+.option:hover { border-color: var(--line-2); }
 
 /* A shortfall is stated, not styled away. It usually means another supplier still has
    to be found, and that is the trader's next phone call. */
@@ -854,10 +936,8 @@ main {
 }
 
 .diff thead th {
-  font-size: 11px;
+  font-size: 12px;
   font-weight: 600;
-  letter-spacing: 0.04em;
-  text-transform: uppercase;
   color: var(--muted);
   border-bottom: 1px solid var(--warn-line);
 }
@@ -871,12 +951,10 @@ main {
 .diff .wanted { color: var(--ink-2); }
 
 .note-group .note-title {
-  font-size: 11px;
+  font-size: 12.5px;
   font-weight: 600;
-  letter-spacing: 0.04em;
-  text-transform: uppercase;
-  color: var(--muted);
-  margin-bottom: 3px;
+  color: var(--ink-2);
+  margin-bottom: 2px;
 }
 
 .note-group ul {
@@ -920,10 +998,8 @@ main {
 }
 
 .quote-label {
-  font-size: 11px;
+  font-size: 13px;
   font-weight: 700;
-  letter-spacing: 0.07em;
-  text-transform: uppercase;
   color: var(--ok);
 }
 
@@ -998,23 +1074,32 @@ main {
   padding: 9px 17px;
   border: none;
   border-radius: var(--radius-sm);
-  background: var(--accent);
+  background: var(--brand);
   color: white;
   font-weight: 600;
   box-shadow: var(--shadow);
   transition: background 0.12s ease, transform 0.06s ease;
 }
 
-.resolve:hover:not([disabled]) { background: var(--accent-ink); }
+.resolve:hover:not([disabled]) { background: var(--brand-deep); }
 .resolve:active:not([disabled]) { transform: translateY(1px); }
 .resolve[disabled] { opacity: 0.45; cursor: default; box-shadow: none; }
 
 /* ---------------------------------------------------------------- narrow */
 
+@media (max-width: 1180px) {
+  .top { background-image: none; }
+}
+
+@media (max-width: 900px) {
+  .brand-name { display: none; }
+  .account .muted { display: none; }
+}
+
 @media (max-width: 720px) {
   main { padding: 16px 12px 60px; }
-  .top { padding: 0 12px; gap: 8px; }
-  .tab { padding: 14px 9px; font-size: 13px; }
+  .top { padding: 0 12px; gap: 10px; }
+  .tab { padding: 0 9px; font-size: 13px; }
   .match-row { flex-direction: column; gap: 8px; }
   .match-money { text-align: left; }
   .offers th { top: 0; }
@@ -1044,11 +1129,9 @@ main {
 .deal-title { font-weight: 600; font-size: 15px; }
 
 .deal-label {
-  font-size: 11px;
+  font-size: 12.5px;
   font-weight: 600;
-  letter-spacing: 0.06em;
-  text-transform: uppercase;
-  color: var(--muted);
+  color: var(--ink-2);
 }
 
 /* The status box comes first because it is the one field that goes out of date and the
@@ -1070,18 +1153,16 @@ main {
 
 .deal-status textarea:focus {
   outline: none;
-  border-color: var(--accent);
+  border-color: var(--globe);
   background: var(--bg);
-  box-shadow: 0 0 0 3px rgb(30 58 111 / 11%);
+  box-shadow: 0 0 0 3px rgb(31 137 212 / 18%);
 }
 
 .deal h3 {
   margin: 18px 0 6px;
-  font-size: 11px;
+  font-size: 13px;
   font-weight: 600;
-  letter-spacing: 0.06em;
-  text-transform: uppercase;
-  color: var(--muted);
+  color: var(--ink-2);
 }
 
 .deal-foot {
@@ -1108,11 +1189,9 @@ main {
 
 h3.section {
   margin: 26px 0 12px;
-  font-size: 11px;
+  font-size: 15px;
   font-weight: 600;
-  letter-spacing: 0.06em;
-  text-transform: uppercase;
-  color: var(--muted);
+  color: var(--brand);
 }
 
 h3.section:first-child { margin-top: 0; }
@@ -1182,3 +1261,15 @@ h3.section:first-child { margin-top: 0; }
 }
 
 .flagged-row .resolve { margin-top: 10px; }
+
+/* Group names arrive in lower case from the API ('different spec'); shown as headings. */
+.match-group h3::first-letter { text-transform: uppercase; }
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    transition-duration: 0.01ms !important;
+  }
+}

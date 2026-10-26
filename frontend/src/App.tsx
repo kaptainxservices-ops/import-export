@@ -79,7 +79,15 @@ function Board({ email }: { email: string }) {
   return (
     <div className="app">
       <header className="top">
-        <nav>
+        {/* The client's own mark. The trading board is theirs, and it should look it. */}
+        <div className="brand">
+          <span className="brand-plate">
+            <img src="/tvd-logo.png" alt="" width={44} height={36} />
+          </span>
+          <span className="brand-name">TVD Services</span>
+        </div>
+
+        <nav aria-label="Sections">
           <button
             className={tab === "matches" ? "tab active" : "tab"}
             onClick={() => switchTab("matches")}
@@ -122,7 +130,7 @@ function Board({ email }: { email: string }) {
         <div className="account">
           <span className="muted">{email}</span>
           <button className="link" onClick={() => void supabase.auth.signOut()}>
-            sign out
+            Sign out
           </button>
         </div>
       </header>

@@ -61,8 +61,9 @@ export function Login() {
   return (
     <div className="centre">
       <form className="card login" onSubmit={submit}>
-        <h1>Import-Export</h1>
-        <p className="muted">Sign in to see the board.</p>
+        <img className="login-logo" src="/tvd-logo.png" alt="TVD" width={96} height={78} />
+        <h1>TVD Services</h1>
+        <p className="muted">Sign in to the trading board.</p>
 
         <label>
           Email
