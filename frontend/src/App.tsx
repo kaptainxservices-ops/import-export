@@ -184,7 +184,11 @@ function Board({ email }: { email: string }) {
       </header>
 
       <main>
-        {tab === "matches" ? (
+        {/* Kept mounted while another tab is open, only hidden. Unmounting threw away
+            the board, the filters and the search, so every return to Matches started
+            from nothing and waited for a full load; now it is exactly as it was left,
+            and realtime keeps it current in the background. */}
+        <div hidden={tab !== "matches"}>
           <MatchBoard
             onOpen={openRequirement}
             buyers={buyers}
@@ -194,7 +198,9 @@ function Board({ email }: { email: string }) {
             fresh={matchAlerts.highlight}
             refreshKey={resolved}
           />
-        ) : tab === "deals" ? (
+        </div>
+
+        {tab === "matches" ? null : tab === "deals" ? (
           <Deals />
         ) : tab === "review" ? (
           <ReviewQueue onResolved={() => setResolved((n) => n + 1)} />
