@@ -1,15 +1,28 @@
-import type { OfferFilters } from "../hooks/useOffers";
+import type { ClientOption, OfferFilters } from "../hooks/useOffers";
 
 interface Props {
   filters: OfferFilters;
   brands: string[];
   categories: string[];
+  /** Counterparties with something live on this side — suppliers or buyers. */
+  clients: ClientOption[];
+  /** 'sellers' or 'buyers', for the dropdown's "All …" option. */
+  clientLabel: string;
   onChange: (filters: OfferFilters) => void;
   total: number;
   showing: number;
 }
 
-export function Filters({ filters, brands, categories, onChange, total, showing }: Props) {
+export function Filters({
+  filters,
+  brands,
+  categories,
+  clients,
+  clientLabel,
+  onChange,
+  total,
+  showing,
+}: Props) {
   function set<K extends keyof OfferFilters>(key: K, value: OfferFilters[K]) {
     onChange({ ...filters, [key]: value });
   }
@@ -36,6 +49,19 @@ export function Filters({ filters, brands, categories, onChange, total, showing 
         value={filters.search}
         onChange={(e) => set("search", e.target.value)}
       />
+
+      <select
+        value={filters.counterparty}
+        onChange={(e) => set("counterparty", e.target.value)}
+        aria-label="Client"
+      >
+        <option value="">All {clientLabel}</option>
+        {clients.map((client) => (
+          <option key={client.id} value={client.id}>
+            {client.name}
+          </option>
+        ))}
+      </select>
 
       <select value={filters.brand} onChange={(e) => set("brand", e.target.value)}>
         <option value="">All brands</option>

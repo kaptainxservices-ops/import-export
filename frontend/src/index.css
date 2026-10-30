@@ -1540,3 +1540,118 @@ h3.section:first-child { margin-top: 0; }
 }
 
 .resolve.quiet:hover:not([disabled]) { background: var(--accent-soft); }
+
+/* ---------------------------------------------------------------- new matches */
+
+/* A match the trader has not seen yet. Tinted, not shouted: the board is still ranked
+   by money, and a loud row would pull the eye off a better one above it. */
+.match-row.is-new { background: var(--accent-soft); }
+.match-row.is-new:hover { background: var(--hover); }
+
+.tag.new {
+  background: var(--globe);
+  border-color: var(--globe);
+  color: #fff;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  vertical-align: 1px;
+}
+
+/* Matches' count is news, not a backlog: blue like the active tab, not Review's amber. */
+.nav-count.new {
+  background: var(--globe-on-brand);
+  color: var(--brand-deep);
+}
+
+.toasts {
+  position: fixed;
+  right: 20px;
+  bottom: 20px;
+  z-index: 60;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  width: min(380px, calc(100vw - 32px));
+}
+
+.toast {
+  background: var(--bg);
+  border: 1px solid var(--line);
+  border-left: 4px solid var(--globe);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow-lg);
+  padding: 12px 14px 12px 16px;
+  animation: toast-in 0.18s ease-out;
+}
+
+@keyframes toast-in {
+  from { opacity: 0; transform: translateY(8px); }
+  to { opacity: 1; transform: none; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .toast { animation: none; }
+}
+
+.toast-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 6px;
+}
+
+.toast-title {
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: var(--globe);
+}
+
+.toast-close {
+  border: none;
+  background: none;
+  padding: 0 4px;
+  font-size: 20px;
+  line-height: 1;
+  color: var(--muted);
+}
+
+.toast-close:hover { color: var(--ink); }
+
+.toast-rows {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.toast-row {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  width: 100%;
+  padding: 6px 8px;
+  margin: 0 -8px;
+  border: none;
+  border-radius: var(--radius-sm);
+  background: none;
+  color: inherit;
+  text-align: left;
+}
+
+.toast-row:hover { background: var(--hover); }
+
+.toast-item {
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+
+.toast-sub {
+  font-size: 12.5px;
+  color: var(--muted);
+}
+
+.toast-all {
+  margin-top: 6px;
+  font-size: 13px;
+}

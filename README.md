@@ -92,6 +92,19 @@ can read is decided by row-level security in Postgres, so a bug in the browser c
 another tenant's prices. Filtering runs in Postgres, not the browser, because a busy morning
 puts thousands of rows on the board.
 
+Matches can be narrowed by product search (every word, any order, across description, model,
+EAN, capacity and colour), by client (a buyer's requirements, or what one supplier's stock can
+fill), brand and product type, and sorted best-first or newest-first. "Newest" is when the
+match first became possible — the later of the requirement's and its newest lot's
+`first_seen_at` — so a supplier resending yesterday's list does not make it new. Sellers and
+Buyers have the same client filter.
+
+Match alerts run in the browser while the dashboard is open: when a requirement turns
+fillable, a toast appears, the Matches tab shows a count, the row is tagged NEW, and — once
+the trader allows it — a desktop notification fires. Each requirement is announced once per
+person and browser; the first visit learns the existing board silently. Nothing is sent
+while every dashboard tab is closed; that would need the server to send email instead.
+
 The source-email drawer is the point of the whole screen. Every number on the board was read
 out of an email by software; the first time a price looks wrong the trader will want to see
 what the supplier actually wrote, and if he cannot, he stops believing the board.

@@ -187,6 +187,26 @@ export interface MatchBoardRow {
   spec_parts?: string[];
   best_legs?: { name: string; quantity: number; lots?: number }[];
   best_currency?: string | null;
+  buyer_id?: string | null;
+  supplier_ids?: string[];
+  /** When the match became possible; null when nothing can fill the requirement. */
+  matched_at?: string | null;
+  last_confirmed_at?: string | null;
+}
+
+export type MatchSort = "best" | "new";
+
+export interface MatchBoardQuery {
+  brand?: string;
+  category?: string;
+  /** Product search: every word must appear in the requirement. */
+  q?: string;
+  /** Counterparty id: only this buyer's requirements. */
+  buyer?: string;
+  /** Counterparty id: only requirements this supplier can help fill. */
+  supplier?: string;
+  sort?: MatchSort;
+  limit?: number;
 }
 
 export interface MatchBoard {
@@ -269,12 +289,15 @@ export async function closeDeal(
   );
 }
 
-export async function fetchMatchBoard(
-  filters: { brand?: string; category?: string } = {},
-): Promise<MatchBoard> {
+export async function fetchMatchBoard(filters: MatchBoardQuery = {}): Promise<MatchBoard> {
   const query = new URLSearchParams();
   if (filters.brand) query.set("brand", filters.brand);
   if (filters.category) query.set("category", filters.category);
+  if (filters.q?.trim()) query.set("q", filters.q.trim());
+  if (filters.buyer) query.set("buyer", filters.buyer);
+  if (filters.supplier) query.set("supplier", filters.supplier);
+  if (filters.sort && filters.sort !== "best") query.set("sort", filters.sort);
+  if (filters.limit) query.set("limit", String(filters.limit));
   const suffix = query.toString() ? `?${query}` : "";
 
   return json<MatchBoard>(

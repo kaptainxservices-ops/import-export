@@ -171,6 +171,14 @@ class BoardOffer:
     edition: str | None = None
     availability: str | None = None
     availability_note: str | None = None
+    # For the board's product search: a trader types the model code as often as the
+    # name, and the description does not always carry it.
+    model: str | None = None
+    # When the row first reached the board, and when its sender last repeated it. The
+    # first is what makes a match *new*: a supplier resending the same list every day
+    # refreshes the second without anything new having happened.
+    first_seen_at: str | None = None
+    last_confirmed_at: str | None = None
 
 
 @dataclass(frozen=True)

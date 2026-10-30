@@ -15,6 +15,7 @@ from __future__ import annotations
 import logging
 import re
 from dataclasses import replace
+from datetime import datetime
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel, Field
@@ -134,6 +135,14 @@ class BoardRowOut(BaseModel):
     # The currency the suppliers quote in, which is what `blended_unit_cost` is in. The
     # buyer's own currency is often unstated on a WTB list.
     best_currency: str | None = None
+    # The buyer, and every supplier in the best option, by id: what the client filter
+    # and the alerts key on, since two counterparties can share a display name.
+    buyer_id: str | None = None
+    supplier_ids: list[str] = []
+    # When this match became possible: the moment the last of its ingredients — the
+    # requirement or any lot in the best option — first reached the board. None when
+    # nothing can fill it. A supplier resending yesterday's list does not move it.
+    matched_at: str | None = None
 
 
 class BoardOut(BaseModel):
@@ -153,6 +162,15 @@ def board(
     limit: int = Query(300, ge=1, le=1000),
     brand: str | None = Query(None, description="Only requirements for this brand"),
     category: str | None = Query(None, description="Only requirements in this category"),
+    q: str | None = Query(
+        None, description="Product search: every word must appear in the description, "
+        "model or EAN of the requirement"
+    ),
+    buyer: str | None = Query(None, description="Only this buyer's requirements (counterparty id)"),
+    supplier: str | None = Query(
+        None, description="Only requirements this supplier can help fill (counterparty id)"
+    ),
+    sort: str = Query("best", pattern="^(best|new)$", description="'best' or 'new'"),
     context=Depends(current_tenant),
 ) -> BoardOut:
     """Run the matching engine across the whole board, not one row at a time.
@@ -169,7 +187,9 @@ def board(
     tenant_id, repository = context
 
     aliases = _aliases(repository, tenant_id)
-    demand = narrow(repository.load_board(tenant_id, "buy"), brand, category)
+    demand = narrow(
+        repository.load_board(tenant_id, "buy"), brand, category, search=q, buyer=buyer
+    )
     supply_offers = repository.load_board(tenant_id, "sell")
     supply = infer_networks([_supply(o, aliases) for o in supply_offers])
 
@@ -177,6 +197,7 @@ def board(
     # the allocation summary can say 'Al Manar 40' instead of a uuid without a second
     # query.
     names = {o.counterparty_id: o.counterparty_name for o in supply_offers}
+    first_seen = {o.id: o.first_seen_at for o in supply_offers}
 
     rows: list[BoardRowOut] = []
     opportunity = 0.0
@@ -184,7 +205,13 @@ def board(
     unmet = 0
     currency: str | None = None
 
-    for offer in demand[:limit]:
+    for offer in demand:
+        # The cap counts rows shown, not requirements looked at. Filtering by supplier
+        # discards most of what it examines, and capping first would cut off matches
+        # that exist simply because they sorted late.
+        if len(rows) >= limit:
+            break
+
         options = fill_requirement(_requirement(offer, aliases), supply)
 
         # A near miss relaxed something — a different capacity, another colour. It is not
@@ -192,6 +219,15 @@ def board(
         # actually collect.
         real = [o for o in options if o.kind != "near_miss"]
         near = [o for o in options if o.kind == "near_miss"]
+
+        if supplier:
+            # "What can this supplier help fill?" — so the row shows the best option that
+            # actually uses them, not a better one from someone else, which would answer
+            # a question nobody asked. Requirements they play no part in drop out.
+            real = [o for o in real if _uses(o, supplier)]
+            near = [o for o in near if _uses(o, supplier)]
+            if not real and not near:
+                continue
 
         best = real[0] if real else None
         if best is not None and best.total_margin:
@@ -225,12 +261,15 @@ def board(
                 best_legs=_legs(best, names),
                 best_currency=(best.allocations[0].currency if best and best.allocations
                                else None),
+                buyer_id=offer.counterparty_id,
+                supplier_ids=_supplier_ids(best),
+                matched_at=_matched_at(offer, best, first_seen),
                 counterparty_name=offer.counterparty_name,
                 country=offer.country,
                 quantity=offer.quantity,
                 unit_price=offer.unit_price,
                 currency=offer.currency,
-                last_confirmed_at=None,
+                last_confirmed_at=offer.last_confirmed_at,
                 state=state,
                 option_count=len(real),
                 near_miss_count=len(near),
@@ -253,14 +292,7 @@ def board(
     #
     # Within a state, a known margin beats an unknown one, and an unknown one beats a
     # smaller fill.
-    order = {"filled": 0, "short": 1, "near_miss": 2, "no_supply": 3}
-    rows.sort(
-        key=lambda r: (
-            order.get(r.state, 9),
-            -(r.total_margin or 0),
-            -(r.filled_quantity or 0),
-        )
-    )
+    rank_rows(rows, sort)
 
     return BoardOut(
         rows=rows,
@@ -270,6 +302,66 @@ def board(
         currency=currency,
         supply_rows=len(supply),
     )
+
+
+_STATE_ORDER = {"filled": 0, "short": 1, "near_miss": 2, "no_supply": 3}
+
+
+def rank_rows(rows: list[BoardRowOut], sort: str = "best") -> None:
+    """Order the board in place.
+
+    'best' is the ranking described above: fillable first, then known margin, then the
+    bigger fill. 'new' puts the most recently possible match at the top — the question
+    after an alert, "what just turned up?" — and leaves everything nobody can fill
+    beneath it in the 'best' order, since an unfillable row has no moment it matched.
+    """
+
+    def best(r: BoardRowOut) -> tuple:
+        return (_STATE_ORDER.get(r.state, 9), -(r.total_margin or 0), -(r.filled_quantity or 0))
+
+    rows.sort(key=best)
+    if sort == "new":
+        # Stable sort: rows matched at the same moment keep their 'best' order.
+        rows.sort(key=lambda r: -(_when(r.matched_at) or 0.0) if r.matched_at else float("inf"))
+
+
+def _uses(option: MatchOption, counterparty_id: str) -> bool:
+    return any(a.counterparty_id == counterparty_id for a in option.allocations)
+
+
+def _supplier_ids(option: MatchOption | None) -> list[str]:
+    if option is None:
+        return []
+    return list(dict.fromkeys(a.counterparty_id for a in option.allocations))
+
+
+def _matched_at(
+    requirement: BoardOffer, option: MatchOption | None, first_seen: dict[str, str | None]
+) -> str | None:
+    """The moment the last ingredient of the best option reached the board.
+
+    A match exists from when both halves do, so it is the *later* of the requirement's
+    arrival and its newest supplying lot. `first_seen_at` rather than
+    `last_confirmed_at`: suppliers resend their whole list daily, and a match that
+    became "new" every morning would make the sort, and the alerts, mean nothing.
+    """
+    if option is None or not option.allocations:
+        return None
+    stamps = [requirement.first_seen_at] + [
+        first_seen.get(a.offer_id) for a in option.allocations
+    ]
+    known = [(t, s) for s in stamps if s and (t := _when(s)) is not None]
+    return max(known)[1] if known else None
+
+
+def _when(stamp: str | None) -> float | None:
+    """An ISO timestamp as seconds, or None when it cannot be read."""
+    if not stamp:
+        return None
+    try:
+        return datetime.fromisoformat(stamp.replace("Z", "+00:00")).timestamp()
+    except ValueError:
+        return None
 
 
 def _legs(option: MatchOption | None, names: dict[str, str | None]) -> list[LegOut]:
@@ -364,7 +456,11 @@ def place(
 
 
 def narrow(
-    demand: list[BoardOffer], brand: str | None, category: str | None
+    demand: list[BoardOffer],
+    brand: str | None,
+    category: str | None,
+    search: str | None = None,
+    buyer: str | None = None,
 ) -> list[BoardOffer]:
     """The requirements a filtered board should rank.
 
@@ -382,6 +478,20 @@ def narrow(
         demand = [o for o in demand if (o.brand or "").casefold() == brand.casefold()]
     if category:
         demand = [o for o in demand if (o.category or "").casefold() == category.casefold()]
+    if buyer:
+        demand = [o for o in demand if o.counterparty_id == buyer]
+    words = (search or "").casefold().split()
+    if words:
+        # Every word, anywhere, in any order: 'iphone 15 128' has to find
+        # 'Apple iPhone 15 Pro 128GB', which a single substring never would.
+        # Capacity and colour are included because extraction often lifts them out of
+        # the description into their own columns.
+        def haystack(o: BoardOffer) -> str:
+            capacity = f"{o.capacity_gb}gb" if o.capacity_gb else None
+            parts = (o.description, o.model, o.ean, o.brand, capacity, o.colour)
+            return " ".join(p for p in parts if p).casefold()
+
+        demand = [o for o in demand if all(w in haystack(o) for w in words)]
     return demand
 
 

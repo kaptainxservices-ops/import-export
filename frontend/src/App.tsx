@@ -6,18 +6,21 @@ import { Filters } from "./components/Filters";
 import { Login } from "./components/Login";
 import { MatchBoard } from "./components/MatchBoard";
 import { MatchDrawer, type MatchSubject } from "./components/MatchDrawer";
+import { MatchToasts } from "./components/MatchToasts";
 import { OfferTable } from "./components/OfferTable";
 import { ReviewQueue } from "./components/ReviewQueue";
 import { SourceDrawer } from "./components/SourceDrawer";
 import { Suppliers } from "./components/Suppliers";
+import { useMatchAlerts } from "./hooks/useMatchAlerts";
 import {
   emptyFilters,
+  useClients,
   useFacets,
   useOffers,
   useSupplierNames,
   type OfferFilters,
 } from "./hooks/useOffers";
-import { fetchReviewQueue } from "./lib/api";
+import { fetchReviewQueue, type MatchBoardRow, type MatchSort } from "./lib/api";
 import { supabase } from "./lib/supabase";
 import type { Offer, Side } from "./lib/types";
 
@@ -59,6 +62,29 @@ function Board({ email }: { email: string }) {
   const { offers, loading, error, total } = useOffers(side, filters, resolved);
   const { brands, categories } = useFacets(side);
   const supplierNames = useSupplierNames();
+  const buyers = useClients("buy");
+  const sellers = useClients("sell");
+  const [matchSort, setMatchSort] = useState<MatchSort>("best");
+
+  function openRequirement(row: MatchBoardRow) {
+    setMatching({
+      id: row.offer_id,
+      side: "buy",
+      description: row.description,
+      quantity: row.quantity,
+      unit_price: row.unit_price,
+      currency: row.currency,
+    });
+  }
+
+  function showNewMatches() {
+    setTab("matches");
+    setMatchSort("new");
+  }
+
+  const matchAlerts = useMatchAlerts(email, tab === "matches", (row) =>
+    row ? openRequirement(row) : showNewMatches(),
+  );
 
   // The count sits in the nav so a waiting email is visible from any screen. Fetched
   // once and again after each resolution, which is the only thing that changes it.
@@ -93,6 +119,11 @@ function Board({ email }: { email: string }) {
             onClick={() => switchTab("matches")}
           >
             Matches
+            {matchAlerts.unseenCount > 0 && (
+              <span className="nav-count new" title="New matches since you last looked">
+                {matchAlerts.unseenCount}
+              </span>
+            )}
           </button>
           <button
             className={tab === "sell" ? "tab active" : "tab"}
@@ -128,6 +159,23 @@ function Board({ email }: { email: string }) {
         </nav>
 
         <div className="account">
+          {matchAlerts.permission === "default" && (
+            <button
+              className="link"
+              onClick={() => void matchAlerts.enableDesktop()}
+              title="Get a system notification when a buyer's requirement can be filled, even when this tab is in the background"
+            >
+              Turn on match alerts
+            </button>
+          )}
+          {matchAlerts.permission === "denied" && (
+            <span
+              className="muted"
+              title="This browser is blocking notifications for the site. Allow them in the address bar's site settings to get desktop alerts; in-app alerts still work."
+            >
+              Desktop alerts blocked
+            </span>
+          )}
           <span className="muted">{email}</span>
           <button className="link" onClick={() => void supabase.auth.signOut()}>
             Sign out
@@ -138,16 +186,13 @@ function Board({ email }: { email: string }) {
       <main>
         {tab === "matches" ? (
           <MatchBoard
-            onOpen={(row) =>
-              setMatching({
-                id: row.offer_id,
-                side: "buy",
-                description: row.description,
-                quantity: row.quantity,
-                unit_price: row.unit_price,
-                currency: row.currency,
-              })
-            }
+            onOpen={openRequirement}
+            buyers={buyers}
+            suppliers={sellers}
+            sort={matchSort}
+            onSortChange={setMatchSort}
+            fresh={matchAlerts.highlight}
+            refreshKey={matchAlerts.version + resolved}
           />
         ) : tab === "deals" ? (
           <Deals />
@@ -161,6 +206,8 @@ function Board({ email }: { email: string }) {
               filters={filters}
               brands={brands}
               categories={categories}
+              clients={side === "sell" ? sellers : buyers}
+              clientLabel={side === "sell" ? "sellers" : "buyers"}
               onChange={setFilters}
               total={total}
               showing={offers.length}
@@ -192,6 +239,13 @@ function Board({ email }: { email: string }) {
           </>
         )}
       </main>
+
+      <MatchToasts
+        alerts={matchAlerts.alerts}
+        onOpen={openRequirement}
+        onShowAll={showNewMatches}
+        onDismiss={matchAlerts.dismiss}
+      />
 
       {selected && <SourceDrawer offer={selected} onClose={() => setSelected(null)} />}
       {matching && (

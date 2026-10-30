@@ -1,8 +1,27 @@
 import { useEffect, useState } from "react";
 
-import { useFacets } from "../hooks/useOffers";
-import { fetchMatchBoard, type MatchBoard as Board, type MatchBoardRow } from "../lib/api";
+import { useFacets, type ClientOption } from "../hooks/useOffers";
+import {
+  fetchMatchBoard,
+  type MatchBoard as Board,
+  type MatchBoardRow,
+  type MatchSort,
+} from "../lib/api";
 import { bigMoney, money } from "../lib/money";
+import { relativeAge } from "../lib/types";
+
+interface Props {
+  onOpen: (row: MatchBoardRow) => void;
+  /** Counterparties with live requirements, and with live lots. */
+  buyers: ClientOption[];
+  suppliers: ClientOption[];
+  sort: MatchSort;
+  onSortChange: (sort: MatchSort) => void;
+  /** Requirements that turned fillable since this person last looked: tagged NEW. */
+  fresh: Set<string>;
+  /** Bumped by the match watcher when the board has changed underneath this screen. */
+  refreshKey: number;
+}
 
 /**
  * Every buyer requirement, matched against every supplier, ranked by money.
@@ -15,7 +34,15 @@ import { bigMoney, money } from "../lib/money";
  * requirement is not noise, it is a thing to go and source; dropping it would hide the
  * demand along with the problem.
  */
-export function MatchBoard({ onOpen }: { onOpen: (row: MatchBoardRow) => void }) {
+export function MatchBoard({
+  onOpen,
+  buyers,
+  suppliers,
+  sort,
+  onSortChange,
+  fresh,
+  refreshKey,
+}: Props) {
   const [board, setBoard] = useState<Board | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -26,6 +53,20 @@ export function MatchBoard({ onOpen }: { onOpen: (row: MatchBoardRow) => void })
   // crowd every other category off the top of the screen.
   const [brand, setBrand] = useState("");
   const [category, setCategory] = useState("");
+
+  // One select for both kinds of client, encoded 'buyer:<id>' or 'supplier:<id>'. A
+  // buyer narrows to their requirements; a supplier to what their stock can help fill.
+  const [client, setClient] = useState("");
+  const [clientKind, clientId] = client ? client.split(":", 2) : ["", ""];
+
+  // Typed into straight away, sent once typing pauses: matching the whole board on
+  // every keystroke would queue a dozen requests to answer the last one.
+  const [search, setSearch] = useState("");
+  const [query, setQuery] = useState("");
+  useEffect(() => {
+    const timer = window.setTimeout(() => setQuery(search.trim()), 350);
+    return () => window.clearTimeout(timer);
+  }, [search]);
 
   // Facets come from the buy side: these narrow requirements, so offering a brand
   // nobody has asked for would be a filter that can only ever return nothing.
@@ -38,7 +79,14 @@ export function MatchBoard({ onOpen }: { onOpen: (row: MatchBoardRow) => void })
 
     void (async () => {
       try {
-        const next = await fetchMatchBoard({ brand, category });
+        const next = await fetchMatchBoard({
+          brand,
+          category,
+          q: query,
+          buyer: clientKind === "buyer" ? clientId : undefined,
+          supplier: clientKind === "supplier" ? clientId : undefined,
+          sort,
+        });
         if (!cancelled) setBoard(next);
       } catch (problem) {
         if (!cancelled) {
@@ -52,47 +100,117 @@ export function MatchBoard({ onOpen }: { onOpen: (row: MatchBoardRow) => void })
     return () => {
       cancelled = true;
     };
-  }, [brand, category]);
+  }, [brand, category, query, clientKind, clientId, sort, refreshKey]);
 
-  if (error) return <p className="error">{error}</p>;
+  const narrowed = Boolean(brand || category || client || query);
 
   const filters = (
-    <div className="filters">
-      <select value={brand} onChange={(e) => setBrand(e.target.value)}>
-        <option value="">All brands</option>
-        {brands.map((b) => (
-          <option key={b} value={b}>
-            {b}
-          </option>
-        ))}
-      </select>
+    <>
+      <div className="filters">
+        <input
+          className="search"
+          type="search"
+          placeholder="Search products — model, name or EAN…"
+          value={search}
+          onChange={(e) => setSearch(e.target.value)}
+          aria-label="Search products"
+        />
 
-      <select value={category} onChange={(e) => setCategory(e.target.value)}>
-        <option value="">All product types</option>
-        {categories.map((c) => (
-          <option key={c} value={c}>
-            {c}
-          </option>
-        ))}
-      </select>
+        <select value={client} onChange={(e) => setClient(e.target.value)} aria-label="Client">
+          <option value="">All clients</option>
+          {buyers.length > 0 && (
+            <optgroup label="Buyers — their requirements">
+              {buyers.map((c) => (
+                <option key={`b${c.id}`} value={`buyer:${c.id}`}>
+                  {c.name}
+                </option>
+              ))}
+            </optgroup>
+          )}
+          {suppliers.length > 0 && (
+            <optgroup label="Suppliers — what they can fill">
+              {suppliers.map((c) => (
+                <option key={`s${c.id}`} value={`supplier:${c.id}`}>
+                  {c.name}
+                </option>
+              ))}
+            </optgroup>
+          )}
+        </select>
 
-      {(brand || category) && (
-        <button
-          className="link"
-          onClick={() => {
-            setBrand("");
-            setCategory("");
-          }}
+        <select value={brand} onChange={(e) => setBrand(e.target.value)} aria-label="Brand">
+          <option value="">All brands</option>
+          {brands.map((b) => (
+            <option key={b} value={b}>
+              {b}
+            </option>
+          ))}
+        </select>
+
+        <select
+          value={category}
+          onChange={(e) => setCategory(e.target.value)}
+          aria-label="Product type"
         >
-          show everything
-        </button>
-      )}
+          <option value="">All product types</option>
+          {categories.map((c) => (
+            <option key={c} value={c}>
+              {c}
+            </option>
+          ))}
+        </select>
 
-      {board && (
-        <span className="count">{board.rows.length.toLocaleString()} requirements</span>
-      )}
-    </div>
+        {narrowed && (
+          <button
+            className="link"
+            onClick={() => {
+              setBrand("");
+              setCategory("");
+              setClient("");
+              setSearch("");
+              setQuery("");
+            }}
+          >
+            show everything
+          </button>
+        )}
+
+        {board && (
+          <span className="count">{board.rows.length.toLocaleString()} requirements</span>
+        )}
+      </div>
+
+      <div className="pills" role="radiogroup" aria-label="Sort matches">
+        <span className="muted">Sort:</span>
+        {(
+          [
+            ["best", "Best matches"],
+            ["new", "Newest matches"],
+          ] as [MatchSort, string][]
+        ).map(([key, label]) => (
+          <button
+            key={key}
+            role="radio"
+            aria-checked={sort === key}
+            className={sort === key ? "pill on" : "pill"}
+            onClick={() => onSortChange(key)}
+          >
+            {label}
+          </button>
+        ))}
+        {loading && board && <span className="muted">updating…</span>}
+      </div>
+    </>
   );
+
+  if (error) {
+    return (
+      <>
+        {filters}
+        <p className="error">{error}</p>
+      </>
+    );
+  }
 
   // The filter bar stays put while a new slice loads. Replacing the whole screen with a
   // spinner on every change takes away the control the trader is currently using.
@@ -110,9 +228,11 @@ export function MatchBoard({ onOpen }: { onOpen: (row: MatchBoardRow) => void })
       <>
         {filters}
         <p className="empty">
-          {brand || category
-            ? "Nothing is being asked for in that slice of the board."
-            : "No buyer requirements on the board yet. They arrive as WTB emails are read."}
+          {clientKind === "supplier"
+            ? "Nothing on the board that this supplier's stock can fill."
+            : narrowed
+              ? "Nothing is being asked for in that slice of the board."
+              : "No buyer requirements on the board yet. They arrive as WTB emails are read."}
         </p>
       </>
     );
@@ -141,11 +261,17 @@ export function MatchBoard({ onOpen }: { onOpen: (row: MatchBoardRow) => void })
           <span className="num">Value</span>
         </div>
         {board.rows.map((row) => (
-          <Row key={row.offer_id} row={row} onOpen={onOpen} />
+          <Row key={row.offer_id} row={row} onOpen={onOpen} isNew={fresh.has(row.offer_id)} />
         ))}
       </div>
     </>
   );
+}
+
+/** relativeAge reads "6 days" for a column headed Received; here it needs the "ago". */
+function ago(stamp: string): string {
+  const age = relativeAge(stamp);
+  return age.endsWith("days") ? `${age} ago` : age;
 }
 
 function Tile({
@@ -183,7 +309,15 @@ const STATE_LABEL: Record<MatchBoardRow["state"], string> = {
  * cost, 'buyer stated no price' — so every row was a sentence to be read, and the
  * figures never lined up from one row to the next.
  */
-function Row({ row, onOpen }: { row: MatchBoardRow; onOpen: (row: MatchBoardRow) => void }) {
+function Row({
+  row,
+  onOpen,
+  isNew,
+}: {
+  row: MatchBoardRow;
+  onOpen: (row: MatchBoardRow) => void;
+  isNew: boolean;
+}) {
   const parts = row.spec_parts ?? (row.spec ? row.spec.split(" · ") : []);
   const legs = row.best_legs ?? [];
   const wanted = row.quantity ?? 0;
@@ -193,9 +327,12 @@ function Row({ row, onOpen }: { row: MatchBoardRow; onOpen: (row: MatchBoardRow)
   const fillable = row.state === "filled" || row.state === "short";
 
   return (
-    <button className={`match-row ${row.state}`} onClick={() => onOpen(row)}>
+    <button className={`match-row ${row.state}${isNew ? " is-new" : ""}`} onClick={() => onOpen(row)}>
       <div className="mr-main">
-        <div className="mr-title">{row.description}</div>
+        <div className="mr-title">
+          {row.description}
+          {isNew && <span className="tag new">NEW</span>}
+        </div>
         {parts.length > 0 && (
           <div className="mr-chips">
             {parts.map((part) => (
@@ -226,6 +363,11 @@ function Row({ row, onOpen }: { row: MatchBoardRow; onOpen: (row: MatchBoardRow)
           {fillable && wanted > 0 && (
             <span className="mr-sub">
               {row.filled_quantity.toLocaleString()} of {wanted.toLocaleString()}
+            </span>
+          )}
+          {fillable && row.matched_at && (
+            <span className="mr-sub" title={`Match possible since ${row.matched_at}`}>
+              · matched {ago(row.matched_at)}
             </span>
           )}
         </div>

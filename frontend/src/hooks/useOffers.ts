@@ -148,6 +148,55 @@ export function useFacets(side: Side) {
   return { brands, categories };
 }
 
+export interface ClientOption {
+  id: string;
+  name: string;
+}
+
+/**
+ * The counterparties with something live on one side, for the client filter.
+ *
+ * Asked of `counterparties` with an inner join rather than read off the offers: the
+ * sell side alone holds thousands of rows, more than one request returns, so a list
+ * built from offers would silently miss whichever suppliers sorted past the cap. One
+ * embedded offer per counterparty is enough to prove they have one.
+ *
+ * Only counterparties with a live row are offered: a buyer with no open requirement is
+ * a filter that can only ever return nothing.
+ */
+export function useClients(side: Side) {
+  const [clients, setClients] = useState<ClientOption[]>([]);
+
+  useEffect(() => {
+    void (async () => {
+      const { data } = await supabase
+        .from("counterparties")
+        .select("id,name,primary_email,country,offers!inner(id)")
+        .eq("offers.side", side)
+        .eq("offers.status", "live")
+        .limit(1, { referencedTable: "offers" })
+        .limit(2000);
+
+      const rows = (data ?? []) as {
+        id: string;
+        name: string | null;
+        primary_email: string;
+        country: string | null;
+      }[];
+      setClients(
+        rows
+          .map((row) => {
+            const who = row.name || row.primary_email;
+            return { id: row.id, name: row.country ? `${who} · ${row.country}` : who };
+          })
+          .sort((a, b) => a.name.localeCompare(b.name)),
+      );
+    })();
+  }, [side]);
+
+  return clients;
+}
+
 /**
  * Counterparty names, by id.
  *

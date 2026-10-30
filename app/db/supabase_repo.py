@@ -1245,6 +1245,7 @@ _BOARD_COLUMNS = (
     "id,counterparty_id,side,description,quantity,unit_price,currency,"
     "identity_key,description_key,ean,brand,category,capacity_gb,colour,"
     "grade,region_code,ram_gb,edition,availability,availability_note,"
+    "model,first_seen_at,last_confirmed_at,"
     "counterparties(name,country,primary_email)"
 )
 
@@ -1279,6 +1280,9 @@ def _board_offer(row: dict) -> BoardOffer:
         edition=row.get("edition"),
         availability=row.get("availability"),
         availability_note=row.get("availability_note"),
+        model=row.get("model"),
+        first_seen_at=row.get("first_seen_at"),
+        last_confirmed_at=row.get("last_confirmed_at"),
     )
 
 
