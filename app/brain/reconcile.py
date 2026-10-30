@@ -60,6 +60,10 @@ class ExistingOffer:
     currency: str | None = None
     status: str = "live"
     last_confirmed_at: datetime | None = None
+    category: str | None = None
+    # The email that first put this row on the board. Rows that arrived in one email
+    # show which categories this sender lists together (see list_scope).
+    source_email_id: str | None = None
 
 
 @dataclass(frozen=True)
@@ -145,6 +149,7 @@ def reconcile(
     previous_row_count: int | None = None,
     is_complete_list: bool | None = None,
     low_row_count_ratio: float = LOW_ROW_COUNT_RATIO,
+    close_scope: set[str] | None = None,
 ) -> ReconcileResult:
     """Work out what a newly arrived list means.
 
@@ -217,8 +222,14 @@ def reconcile(
         )
 
     if may_close:
+        # A list replaces what the sender had *in the categories it covers*. Senders
+        # split their stock by category -- Mobielwerkt sends Accessories, Phones and
+        # Tablets as three emails -- and the phones list says nothing about tablets.
+        # Without this, each list closed the other two as sold.
         seen = {item.identity_key for item in deduped}
         for key, offer in live.items():
+            if close_scope is not None and offer.id not in close_scope:
+                continue
             if key not in seen:
                 result.actions.append(
                     Action(
@@ -366,3 +377,87 @@ def _implausible_move(old: float | None, new: float | None) -> bool:
 
 def _text(value: object) -> str | None:
     return None if value is None else str(value)
+
+
+# A category joins another's scope only when the sender has really listed them together:
+# at least this many rows of it in one email, or this share of that email.
+_LINK_MIN_ROWS = 2
+_LINK_MIN_SHARE = 0.10
+
+
+def list_scope(
+    existing: list[ExistingOffer],
+    covered: set[str | None],
+    already_confirmed: set[str | None] = frozenset(),
+) -> set[str]:
+    """The live rows a new list speaks for: the ids it may close if they are absent.
+
+    The categories it contains, plus any category this sender has previously sent in
+    the same email as one of them. Two habits look identical from a single email:
+
+    - one combined list a day (phones and an adapter, together): tomorrow's list with
+      no adapter means the adapter sold;
+    - one list per category (Mobielwerkt's Accessories, Phones and Tablets, as three
+      emails): the phones list says nothing about tablets.
+
+    The sender's own history tells them apart. A stray row does not link two
+    categories -- one accessory inside a 120-line phone list is not a habit.
+
+    Rows with no category link nothing: extraction leaves a category empty when it
+    cannot tell, and an empty category shared by an accessories list and a phones list
+    made the phones list close every accessory. An uncategorised row belongs with what
+    the email it came in was otherwise about.
+
+    `already_confirmed` are categories a whole list covered earlier today; this list
+    adds to them but closes nothing there.
+    """
+    live = [o for o in existing if o.status == "live"]
+    by_email: dict[str, list[ExistingOffer]] = {}
+    for offer in live:
+        by_email.setdefault(offer.source_email_id or f"row:{offer.id}", []).append(offer)
+
+    real = {c for c in covered if c is not None}
+    if not real:
+        # A sender whose lines are all uncategorised: their uncategorised rows are the
+        # list, as before categories were considered at all.
+        if None in already_confirmed:
+            return set()
+        return {o.id for o in live if o.category is None}
+
+    groups = {
+        key: habitual_categories([o.category for o in rows]) for key, rows in by_email.items()
+    }
+    categories = set(real)
+    for together in groups.values():
+        if together & real:
+            categories |= together
+    categories -= {c for c in already_confirmed if c is not None}
+
+    # A row whose category is a habit of the email it came in is judged by that
+    # category. A row that was a stray there -- uncategorised, or the one 'phone' among
+    # seventy accessories, which was a ring stand -- belongs with what its email was
+    # about, and is closed only by a list about that.
+    ids: set[str] = set()
+    for key, rows in by_email.items():
+        habits = groups[key]
+        speaks_for_email = bool(habits & categories)
+        for row in rows:
+            if row.category is not None and row.category in habits:
+                if row.category in categories:
+                    ids.add(row.id)
+            elif speaks_for_email:
+                ids.add(row.id)
+    return ids
+
+
+def habitual_categories(categories: list[str | None]) -> set[str]:
+    """The categories a list is really about: not its strays or its unknowns."""
+    counts: dict[str, int] = {}
+    for category in categories:
+        if category is not None:
+            counts[category] = counts.get(category, 0) + 1
+    total = len(categories) or 1
+    return {
+        c for c, n in counts.items()
+        if n >= _LINK_MIN_ROWS or n / total >= _LINK_MIN_SHARE
+    }

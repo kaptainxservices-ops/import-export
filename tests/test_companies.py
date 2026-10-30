@@ -119,8 +119,29 @@ def retyped(subject, *, tenant="tenant-1", message_id="<m1@x>"):
     )
 
 
-def test_an_unknown_company_still_goes_to_a_person(repo):
+def test_an_unknown_company_is_opened_rather_than_queued(repo):
+    """First sight of a supplier known only by name. It used to wait in Review with
+    nothing on the board; a fifth of the sample inbox looked like this. Now a
+    counterparty is opened under the name, with an address that says it has none."""
     result = process_email(retyped("Vadimpex Offer"), repo)
+
+    assert result.processed
+    created = repo.get_counterparty("tenant-1", result.counterparty_id)
+    assert created.name == "Vadimpex"
+    assert created.primary_email == "vadimpex@no-address.invalid"
+
+
+def test_the_next_offer_from_that_company_files_under_the_same_counterparty(repo):
+    first = process_email(retyped("Vadimpex Offer"), repo)
+    second = process_email(
+        retyped("Vadimpex Offer").model_copy(update={"message_id": "<again@x>"}), repo
+    )
+    assert second.counterparty_id == first.counterparty_id
+
+
+def test_a_subject_that_names_goods_not_a_company_still_goes_to_a_person(repo):
+    """'Today's Apple Watch offer' is not a supplier called 'Today's Apple Watch'."""
+    result = process_email(retyped("Today's Apple Watch offer"), repo)
     assert result.outcome == "needs_sender_review"
 
 
@@ -166,8 +187,11 @@ def test_it_cannot_reach_another_clients_suppliers(repo):
 
     result = process_email(retyped("Vadimpex Offer"), repo)
 
-    assert result.outcome == "needs_sender_review"
-    assert result.counterparty_id is None
+    # Opened fresh on this tenant -- never filed against the other client's Vadimpex.
+    assert result.counterparty_id is not None
+    filed = repo.get_counterparty("tenant-1", result.counterparty_id)
+    assert filed is not None and filed.primary_email.endswith("@no-address.invalid")
+    assert repo.get_counterparty("tenant-2", result.counterparty_id) is None
 
 
 def test_a_real_address_still_wins(repo):

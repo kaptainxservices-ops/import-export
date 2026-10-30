@@ -97,6 +97,7 @@ class SupplierSummary:
     staleness_hours: int | None = None
     typical_row_count: int | None = None
     live_offers: int = 0
+    created_at: datetime | None = None
     last_seen_at: datetime | None = None
     sample_prices: list[str] = field(default_factory=list)
 
@@ -310,9 +311,35 @@ class ImportRecord:
     content_hash: str | None = None
     compared_to_import_id: str | None = None
     difference_summary: str | None = None
+    # The categories the list covered ('' for rows with none). A later list the same
+    # day in one of these categories adds to the board rather than replacing it.
+    categories: list[str] | None = None
     # When the EMAIL arrived, not when this row was written. The same-day rule compares
     # an arriving email's received_at against this, and comparing it against created_at
     # instead would mean two different clocks: an email that arrived at 23:55 and was
     # processed at 00:10 — an n8n poll delay, or a backlog after an outage — would be
     # recorded as the next day's list and stop holding the revision that follows it.
     source_received_at: datetime | None = None
+
+
+# The import statuses the Review tab shows a price list for. Everything else went on the
+# board and needs nobody: a clean list, a list read as an addition (it closed nothing,
+# which is safe), a resend identical to the one already applied. Every list used to wait
+# for an "approve" click, and that -- not any problem with the lists -- was most of
+# what filled the tab.
+#
+# Doubtful single ROWS are reviewed separately, row by row, whatever their list's status.
+NEEDS_A_PERSON = frozenset({
+    "failed",                 # nothing could be read from it
+    "flagged_low_row_count",  # it says it is a whole list and is suspiciously short
+    "flagged_unparseable",
+})
+
+
+@dataclass(frozen=True)
+class ListedToday:
+    """An applied list from earlier on the same day, as the same-day rule needs it."""
+    received_at: datetime
+    is_complete_list: bool | None
+    # None when the import predates migration 0018 and so cannot say.
+    categories: list[str] | None

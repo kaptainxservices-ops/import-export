@@ -20,9 +20,10 @@ import binascii
 import logging
 import re
 from dataclasses import dataclass, field, replace
+from datetime import timedelta, timezone
 
 from app.brain.classify import Classification, classify_side
-from app.brain.companies import find_unique
+from app.brain.companies import find_unique, matches
 from app.brain.completeness import detect_list_completeness
 from app.brain.confidence import score_row
 from app.brain.fingerprint import describe_difference, list_fingerprint
@@ -34,10 +35,16 @@ from app.brain.normalise import (
     parse_product,
 )
 from app.brain.quoting import strip_quoted_history
-from app.brain.reconcile import IncomingOffer, ReconcileResult, reconcile
+from app.brain.reconcile import (
+    IncomingOffer,
+    ReconcileResult,
+    habitual_categories,
+    list_scope,
+    reconcile,
+)
 from app.brain.resolve_models import resolve_new_models
-from app.brain.sameday import decide
-from app.brain.sender import resolve_sender
+from app.brain.sameday import decide, local_day
+from app.brain.sender import placeholder_address, plausible_company, resolve_sender
 from app.brain.summary import drop_summary_rows
 from app.brain.tables import ColumnMapper, parse_grid, read_html_tables, read_spreadsheet
 from app.brain.tables.parser import TableRow
@@ -46,6 +53,12 @@ from app.db.repository import Repository
 from app.schemas.email import Attachment, InboundEmail
 
 log = logging.getLogger(__name__)
+
+# The old same-day rule: hold a second differing list for a person, untouched. Off --
+# a later list now adds without closing (see "replace or add" below), which is what
+# emptied most of the Review tab. Kept because the held screen still settles lists held
+# before the change, and its tests need a way to make one.
+HOLD_SECOND_LISTS = False
 
 Outcome = str  # 'processed' | 'duplicate' | 'needs_sender_review' | 'unclassified' | 'no_rows'
 
@@ -207,7 +220,22 @@ def process_email(payload: InboundEmail, repo: Repository) -> PipelineResult:
         # broken by picking the better one, it is the signal that the name is not
         # enough — and filing a catalogue against the wrong supplier corrupts two
         # boards at once, while one more email in the queue costs a click.
-        known = find_unique(sender.name, repo.list_counterparties(tenant.id))
+        everyone = repo.list_counterparties(tenant.id)
+        known = find_unique(sender.name, everyone)
+        nobody_by_that_name = not any(matches(sender.name, c.name) for c in everyone)
+        if known is None and nobody_by_that_name and plausible_company(sender.name):
+            # First sight of a supplier known only by name. This used to wait in Review
+            # for a person to say who 'Vadimpex' is -- a fifth of the inbox, on the
+            # sample -- with nothing reaching the board meanwhile. A counterparty is
+            # opened under the name instead, with an address that marks it as having
+            # none (see placeholder_address), and it shows as new on the Counterparties
+            # tab for someone to complete. The stock is on the board from the start.
+            #
+            # Only a name that cannot be a product description qualifies; anything
+            # doubtful still goes to Review, as before.
+            known = repo.create_counterparty(
+                tenant.id, placeholder_address(sender.name), sender.name
+            )
         if known is not None:
             counterparty = known
             sender = replace(
@@ -221,6 +249,22 @@ def process_email(payload: InboundEmail, repo: Repository) -> PipelineResult:
                 confidence=0.75,
                 needs_review=False,
             )
+
+    # No buy or sell wording, and the model (where there is one) had no answer either.
+    # Most of these come from a sender this system already knows: a supplier whose
+    # every line on the board is stock, writing 'Samsung update 10.07' over today's
+    # list. What they have always sent is a far better guess than nothing, and nothing
+    # meant the Review tab. Only a sender who has been one-sided counts: a firm that
+    # both buys and sells gets no default, because then the guess would be a coin toss.
+    if classification.side is None and counterparty is not None:
+        classification = _side_from_history(repo, tenant.id, counterparty.id, classification)
+
+    # Still undecided, and not a single line in it names a product: a newsletter, a
+    # sponsorship pitch, a shipping alert, the building's lift notice. Asking a person
+    # "is this buying or selling?" about those filled most of the Review tab. Stored as
+    # irrelevant instead -- kept, never shown as work. Anything with a product line in
+    # it still goes to a person.
+    irrelevant = classification.side is None and not _names_any_product(payload)
 
     email_id = repo.save_email(
         EmailRecord(
@@ -236,7 +280,9 @@ def process_email(payload: InboundEmail, repo: Repository) -> PipelineResult:
             counterparty_confidence=sender.confidence,
             needs_sender_review=sender.needs_review or counterparty is None,
             suggested_sender_name=sender.name,
-            classification=classification.side or "unclassified",
+            classification=(
+                classification.side or ("irrelevant" if irrelevant else "unclassified")
+            ),
             attachments=[a.model_dump() for a in payload.attachments],
         )
     )
@@ -256,6 +302,14 @@ def process_email(payload: InboundEmail, repo: Repository) -> PipelineResult:
             notes=[f"sender unresolved ({sender.method}); nothing reconciled"],
             model_calls=len(usage),
             model_cost_usd=usage.cost_usd,
+        )
+
+    if irrelevant:
+        return PipelineResult(
+            "irrelevant", payload.message_id, email_id=email_id,
+            counterparty_id=counterparty.id if counterparty else None,
+            notes=[f"{classification.reason}; no product named anywhere in it"],
+            model_calls=len(usage), model_cost_usd=usage.cost_usd,
         )
 
     if classification.side is None:
@@ -370,12 +424,19 @@ def _extract_and_reconcile(
     rows, expanded, unmapped = extract_rows(
         payload, counterparty.decimal_separator, mapper_for(usage), declared
     )
+    if not rows and side == "buy":
+        # A buyer's request is written without prices -- 'WTB / 2  Google Pixel 10 128GB
+        # Frost' -- and the prose reader above only takes lines marked as money. Every
+        # such request was dropped: missing demand on the match board, and a "nothing
+        # could be read" in Review.
+        rows = _requests_from_prose(payload.body_text)
     rows, summarised = drop_summary_rows(rows)
     _record_usage(repo, tenant_id, email_id, usage, since=written)
 
     # Scored per row before anything is written. Two separate answers come back: how much
     # we inferred, which is stored on the row, and whether a person could usefully fix it,
     # which decides whether it reaches the live board at all.
+    list_has_prices = any(r.price is not None for r in rows)
     scores = [
         score_row(
             description=row.description,
@@ -394,6 +455,7 @@ def _extract_and_reconcile(
             has_ean=bool(spec.ean),
             has_decimal_hint=bool(counterparty.decimal_separator),
             side=side,
+            list_has_prices=list_has_prices,
         )
         for row, spec in ((r, _spec(r)) for r in rows)
     ]
@@ -456,11 +518,6 @@ def _extract_and_reconcile(
         )
     ]
 
-    is_complete, why = detect_list_completeness(
-        payload.subject, payload.body_text, len(incoming), counterparty.typical_row_count
-    )
-
-    previous = repo.previous_row_count(tenant_id, counterparty.id)
     existing = repo.load_live_offers(tenant_id, counterparty.id, side)
 
     # ---------------------------------------------------------------- a second list?
@@ -474,12 +531,45 @@ def _extract_and_reconcile(
     # held list is never reconciled at all — no actions are computed, so nothing can
     # reach the board by an oversight downstream.
     fingerprint = list_fingerprint(incoming)
+    zone = getattr(tenant, "timezone", "Europe/Amsterdam")
+    prior = repo.last_applied_import(tenant_id, counterparty.id, side)
     verdict = decide(
         arriving_at=payload.received_at,
         content_hash=fingerprint,
-        prior=repo.last_applied_import(tenant_id, counterparty.id, side),
-        tenant_timezone=getattr(tenant, "timezone", "Europe/Amsterdam"),
+        prior=prior,
+        tenant_timezone=zone,
     )
+
+    # ---------------------------------------------------------------- replace or add
+    #
+    # What a list replaces is the sender's previous list IN THE SAME CATEGORIES -- and
+    # only the first list of the day in a category gets to replace anything. A later
+    # list the same day in a category already confirmed today ("here are the 40 I forgot
+    # this morning") is added: new lines inserted, prices and quantities updated,
+    # nothing closed. A later list in a category not yet seen today (the same buyer's
+    # Phones list after their Accessories list) is the first of the day for *that*
+    # category and replaces normally.
+    #
+    # These lists used to be held for a person, untouched, which is most of what filled
+    # the Review tab. Adding without closing is safe by construction: the only
+    # destructive action is a closure, and none happens in a category already
+    # confirmed today. Whatever sold since the morning closes with tomorrow's first list.
+    covered = {item.fields.get("category") for item in incoming}
+    confirmed_today = _confirmed_today(
+        repo, tenant_id, counterparty.id, side, payload, zone, covered
+    )
+    if verdict.verdict == "hold" and not HOLD_SECOND_LISTS:
+        verdict = replace(verdict, verdict="apply")
+    scope = list_scope(existing, covered, confirmed_today)
+    in_scope = [o for o in existing if o.id in scope]
+
+    # Judged against what this sender has live in the same categories, not against the
+    # size of their last email: a 33-line Tablets list is not "a collapse" from a
+    # 122-line Phones list.
+    is_complete, why = detect_list_completeness(
+        payload.subject, payload.body_text, len(incoming), len(in_scope) or None
+    )
+    previous = len(in_scope) or None
 
     if verdict.verdict != "apply":
         return _not_applied(
@@ -495,8 +585,15 @@ def _extract_and_reconcile(
         incoming,
         previous_row_count=previous,
         is_complete_list=is_complete,
+        close_scope=scope,
     )
     result.notes.append(f"completeness: {why}")
+    already = sorted(str(c or "uncategorised") for c in covered & confirmed_today)
+    if already:
+        result.notes.append(
+            f"another list today already confirmed {', '.join(already)}: added and "
+            f"updated there, closed nothing"
+        )
     if summarised:
         result.notes.append(
             f"{summarised} rows of a summary sheet left out; they total rows of another sheet"
@@ -512,6 +609,9 @@ def _extract_and_reconcile(
 
     repo.record_import(
         ImportRecord(
+            categories=sorted(
+                habitual_categories([item.fields.get("category") for item in incoming])
+            ),
             tenant_id=tenant_id,
             counterparty_id=counterparty.id,
             email_id=email_id,
@@ -575,6 +675,56 @@ def _extract_and_reconcile(
 
 
 # ---------------------------------------------------------------- the model, if any
+
+
+def _names_any_product(payload: InboundEmail) -> bool:
+    """Whether any table, attachment or line of the email reads as a product.
+
+    Rules only -- no model call: this decides whether to ask a person, and the answer
+    for a lift notice should not cost anything.
+    """
+    try:
+        if any(a.content_base64 for a in payload.attachments):
+            payload = payload.model_copy(
+                update={"attachments": materialise_attachments(payload.attachments)}
+            )
+        rows, _, _ = extract_rows(payload, None)
+        if rows:
+            return True
+        text = payload.body_text or _html_text(payload.body_raw)
+        return bool(_requests_from_prose(text)) or bool(
+            _PRODUCT_SIGNAL.search(payload.subject or "")
+        )
+    except Exception:  # noqa: BLE001 -- when in doubt, a person looks
+        return True
+
+
+def _html_text(html: str | None) -> str:
+    if not html:
+        return ""
+    try:
+        from bs4 import BeautifulSoup
+
+        return BeautifulSoup(html, "lxml").get_text("\n")
+    except Exception:  # noqa: BLE001
+        return ""
+
+
+def _side_from_history(repo, tenant_id, counterparty_id, undecided: Classification):
+    selling = len(repo.load_live_offers(tenant_id, counterparty_id, "sell"))
+    buying = len(repo.load_live_offers(tenant_id, counterparty_id, "buy"))
+    if selling and not buying:
+        side = "sell"
+    elif buying and not selling:
+        side = "buy"
+    else:
+        return undecided
+    held = selling or buying
+    return Classification(
+        side, 0.85,
+        f"{undecided.reason}; this sender's {held} lines on the board are all "
+        f"{'stock' if side == 'sell' else 'requirements'}",
+    )
 
 
 def _decide_side(payload: InboundEmail, usage: UsageLog) -> Classification:
@@ -764,6 +914,38 @@ def _not_applied(
     )
 
 
+def _confirmed_today(
+    repo, tenant_id, counterparty_id, side, payload, zone, covered
+) -> set[str | None]:
+    """Categories a whole list from this sender already covered today.
+
+    By the email's clock on both sides, so a list processed late or reprocessed is
+    still judged by the day it was sent. Only whole lists count: a morning "just got 50
+    more" does not stop the afternoon's full list from replacing.
+
+    A list from before migration 0018 cannot say what it covered; it is read as having
+    covered everything, which only ever means closing less.
+    """
+    arriving = payload.received_at
+    if arriving.tzinfo is None:
+        arriving = arriving.replace(tzinfo=timezone.utc)  # noqa: UP017
+    today = local_day(arriving, zone)
+    found: set[str | None] = set()
+    for listed in repo.lists_since(
+        tenant_id, counterparty_id, side, arriving - timedelta(hours=36)
+    ):
+        if listed.is_complete_list is not True or local_day(listed.received_at, zone) != today:
+            continue
+        # Earlier or later the same day: a list already on the board speaks for its
+        # categories today whichever order the two were processed in. n8n catching up
+        # after an outage delivers them out of order, and the later email must not be
+        # undone by an earlier one processed after it.
+        if listed.categories is None:
+            return set(covered)
+        found |= {c or None for c in listed.categories}
+    return found
+
+
 def _held_row(row: IncomingOffer, live) -> dict:
     """One parsed row, plus what it would do to the board if applied.
 
@@ -926,6 +1108,86 @@ def _rows_from_prose(body: str | None, decimal_hint: str | None):
             )
 
     return rows, expanded
+
+
+# A line names a product when it has a brand, a capacity, or a model word. 'All specs
+# welcomed', 'No e-sim only versions accepted' and every signature line have none.
+_PRODUCT_SIGNAL = re.compile(
+    r"\b(?:\d{2,4}\s?(?:gb|tb)|\d+/\d+\s?gb|iphone|ipad|macbook|airpods|galaxy|pixel|"
+    r"xperia|redmi|poco|moto|razr|nord|find\s?x|reno|quest|playstation|ps5|switch|xbox|"
+    r"[as]\d{2,3}(?:\s?(?:ultra|plus|fe|\+))?|z\s?fold\d?|z\s?flip\d?)\b",
+    re.IGNORECASE,
+)
+# '2           Google Pixel 10' -- a count set apart by a wide gap or a tab. A single
+# space is not enough: in '16 128gb mix colours' under 'Apple', 16 is the iPhone.
+_LEADING_COUNT = re.compile(r"^(\d{1,6})(?:\t+|\s{2,})(?=\S)")
+_UNITS_OF = re.compile(r"^(\d{1,6})\s*(?:units?|pcs?|pieces?)\b\s*(?:of\s+)?", re.IGNORECASE)
+_SIGN_OFF = re.compile(
+    r"^(?:kind|best|warm)?\s*regards\b|^thanks?\b|^thank you\b|^cheers\b|^br,?$",
+    re.IGNORECASE,
+)
+
+
+def _requests_from_prose(body: str | None) -> list[TableRow]:
+    """A buyer's wanted list written as lines, with or without counts, never priced.
+
+    Read only for a buy-side email that yielded nothing else. A line is kept when it
+    names a product; its count is taken only when the line sets it apart unmistakably
+    ('2<tab>Pixel 10', '200 units of Moto G55', '50x', 'qty: 50'). A brand alone on a
+    line is a heading for the lines below it. Reading stops at the sign-off, so the
+    signature's address and phone numbers are never read as wants.
+    """
+    from app.brain.normalise import detect_brand, parse_quantity
+
+    rows: list[TableRow] = []
+    heading_brand: str | None = None
+    for number, raw in enumerate((body or "").splitlines(), start=1):
+        line = raw.strip(" •\t-*")
+        if not line:
+            continue
+        if _SIGN_OFF.search(line):
+            break
+        words = line.split()
+        if len(words) <= 2 and detect_brand(line) and not _PRODUCT_SIGNAL.search(line):
+            heading_brand = detect_brand(line)
+            continue
+        if len(line) < 3 or len(words) > 14:
+            continue
+        brand = detect_brand(line)
+        if not brand and not _PRODUCT_SIGNAL.search(line):
+            continue
+
+        quantity = None
+        description = line
+        lead = _LEADING_COUNT.match(raw.strip(" •-*"))
+        units = _UNITS_OF.match(line)
+        if units:
+            quantity = int(units.group(1))
+            description = line[units.end():].strip()
+        elif lead:
+            quantity = int(lead.group(1))
+            description = raw.strip(" •-*")[lead.end():].strip()
+        else:
+            quantity = parse_quantity(line)
+        if quantity is not None and not 0 < quantity <= 100_000:
+            quantity = None
+
+        if not brand and heading_brand:
+            # Under an 'Apple' heading, '16 128gb' is an iPhone 16: buyers drop the
+            # family name the heading already implies.
+            if heading_brand == "Apple" and re.match(r"^(?:1[1-9]|[2-9])\b", description):
+                description = f"iPhone {description}"
+            description = f"{heading_brand} {description}"
+        rows.append(
+            TableRow(
+                description=description,
+                quantity=quantity,
+                price=None,
+                brand=brand or heading_brand,
+                source_ref=f"body line {number}",
+            )
+        )
+    return rows
 
 
 def _quantity_from_markers(text: str) -> tuple[int | None, str]:

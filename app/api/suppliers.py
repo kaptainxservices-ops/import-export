@@ -22,6 +22,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, Field, model_validator
 
 from app.api.deps import current_tenant
+from app.brain.sender import PLACEHOLDER_DOMAIN
 
 router = APIRouter(prefix="/suppliers", tags=["suppliers"])
 log = logging.getLogger(__name__)
@@ -44,6 +45,11 @@ class SupplierOut(BaseModel):
     live_offers: int
     last_seen_at: str | None
     sample_prices: list[str]
+    # When this counterparty first appeared, for the "new since you looked" badge.
+    created_at: str | None = None
+    # Opened from a subject line, with no address yet (see pipeline: a retyped offer
+    # from a supplier known only by name). Someone should add the real one.
+    no_address: bool = False
 
 
 class SuppliersOut(BaseModel):
@@ -109,6 +115,8 @@ def list_suppliers(context=Depends(current_tenant)) -> SuppliersOut:
                 live_offers=s.live_offers,
                 last_seen_at=s.last_seen_at.isoformat() if s.last_seen_at else None,
                 sample_prices=s.sample_prices,
+                created_at=s.created_at.isoformat() if s.created_at else None,
+                no_address=s.primary_email.endswith("@" + PLACEHOLDER_DOMAIN),
             )
             for s in items
         ],

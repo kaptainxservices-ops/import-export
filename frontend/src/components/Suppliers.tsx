@@ -23,7 +23,7 @@ function pretty(sample: string): string {
  * numbers in front of you, and a screen that asks a question it gives you no way to
  * answer gets filled in wrongly or not at all.
  */
-export function Suppliers() {
+export function Suppliers({ fresh = new Set<string>() }: { fresh?: Set<string> }) {
   const [items, setItems] = useState<Supplier[]>([]);
   const [currencies, setCurrencies] = useState<string[]>([]);
   const [unconfigured, setUnconfigured] = useState(0);
@@ -74,7 +74,12 @@ export function Suppliers() {
         </thead>
         <tbody>
           {items.map((supplier) => (
-            <SupplierRow key={supplier.id} supplier={supplier} currencies={currencies} />
+            <SupplierRow
+              key={supplier.id}
+              supplier={supplier}
+              currencies={currencies}
+              isNew={fresh.has(supplier.id)}
+            />
           ))}
         </tbody>
       </table>
@@ -85,9 +90,11 @@ export function Suppliers() {
 function SupplierRow({
   supplier,
   currencies,
+  isNew,
 }: {
   supplier: Supplier;
   currencies: string[];
+  isNew: boolean;
 }) {
   const [row, setRow] = useState(supplier);
   const [saving, setSaving] = useState(false);
@@ -112,10 +119,21 @@ function SupplierRow({
   }
 
   return (
-    <tr>
+    <tr className={isNew ? "is-new" : undefined}>
       <td>
-        <div>{row.name || row.primary_email}</div>
-        {row.name && <div className="muted small">{row.primary_email}</div>}
+        <div>
+          {row.name || row.primary_email}
+          {isNew && <span className="tag new">NEW</span>}
+          {row.no_address && (
+            <span
+              className="tag"
+              title="Opened from a retyped offer's subject line. Their stock is on the board; add their email address when you have it."
+            >
+              no address yet
+            </span>
+          )}
+        </div>
+        {row.name && !row.no_address && <div className="muted small">{row.primary_email}</div>}
         {problem && <div className="error small">{problem}</div>}
         {saved && <div className="resolved small">saved</div>}
       </td>

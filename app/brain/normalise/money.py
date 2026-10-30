@@ -57,10 +57,12 @@ _NUMERIC = re.compile(r"\d+(?:[.,]\d+)*")
 # the € belongs to the 24,50 that follows it, not to the barcode in front. Without the
 # lookahead `after` matched '840414699953 €', consumed the symbol, left the real price
 # unmarked, and put a twelve-digit UPC on the board as the price of a fire stick.
+# '95,- EUR' and '95,–€' are German for 95.00: the dash stands where the cents would be.
+_NO_CENTS = r"(?:[.,]\s?[-–—])?"
 _MARKED_PRICE = re.compile(
     r"[€$£]\s*(?P<before>\d+(?:[.,]\d+)*)"
-    r"|(?P<after>\d+(?:[.,]\d+)*)\s*[€$£](?!\s*\d)"
-    r"|(?P<coded>\d+(?:[.,]\d+)*)\s*(?:EUR|USD|GBP|AED|PLN|CHF|SEK|CZK)\b",
+    rf"|(?P<after>\d+(?:[.,]\d+)*){_NO_CENTS}\s*[€$£](?!\s*\d)"
+    rf"|(?P<coded>\d+(?:[.,]\d+)*){_NO_CENTS}\s*(?:EUR|USD|GBP|AED|PLN|CHF|SEK|CZK)\b",
     re.IGNORECASE,
 )
 

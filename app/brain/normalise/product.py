@@ -35,8 +35,11 @@ from app.brain.normalise.grades import normalise_grade
 from app.brain.normalise.regions import normalise_region_code
 
 # '8+256', '12+1TB', '8/256' — RAM first, then storage. The slash form is Xiaomi's.
+# '8/256', '8+256' -- and '12GB/512GB', '16GB+256GB', with the RAM's unit written too.
+# Without the unit allowed, '16GB+256GB' read as 16GB of storage.
 _RAM_STORAGE = re.compile(
-    r"\b(?P<ram>\d{1,2})\s*[+/]\s*(?P<storage>\d{1,4})\s*(?P<u>gb|tb|g|t)?\b", re.IGNORECASE
+    r"\b(?P<ram>\d{1,2})\s*(?:gb)?\s*[+/]\s*(?P<storage>\d{1,4})\s*(?P<u>gb|tb|g|t)?\b",
+    re.IGNORECASE,
 )
 _CAPACITY = re.compile(r"\b(?P<n>\d{1,4})\s*(?P<u>gb|tb)\b", re.IGNORECASE)
 
@@ -217,7 +220,9 @@ def parse_product(
     capacity = column_capacity if column_capacity is not None else read_capacity
     if column_capacity is not None:
         capacity_warning = None
-    resolved_colour = normalise_colour(colour) if colour else _find_colour(raw)
+    resolved_colour = (
+        normalise_colour(colour) if colour else (_find_colour(raw) or _colour_after_size(raw))
+    )
 
     network_match = _NETWORK.search(raw)
     warnings = [capacity_warning] if capacity_warning else []
@@ -236,7 +241,7 @@ def parse_product(
         capacity_gb=capacity,
         ram_gb=ram,
         colour=resolved_colour,
-        grade=_grade_from(grade) or normalise_grade(raw),
+        grade=_grade_from(grade) or normalise_grade(raw) or grade_in_text(raw),
         region_code=_region_from(region) or normalise_region_code(raw),
         availability=(availability or None),
         network=network_match.group(1).upper() if network_match else None,
@@ -249,6 +254,67 @@ def parse_product(
         model_key=model.key,
         warnings=warnings,
     )
+
+
+_STORAGE_IN_LINE = re.compile(r"(?<![A-Za-z0-9])\d{1,4}\s*(?:GB|TB)(?![A-Za-z0-9])", re.IGNORECASE)
+_TAIL_NOISE = re.compile(
+    r"\b(?:[45]g|lte|wi-?fi|cellular|ds|dual|sim|esim|nfc|eu|uk|us|usa|non|india|spec|"
+    r"global|version|new|sealed|bnib|original|retail|box|open|grade|graded|refurb\w*|used|"
+    r"cpo|all|any|mix|mixed|assorted|random|colou?rs?|incoming|eta|stock|ready|only|"
+    r"[a-z]{1,2}/a|[a-e][+\-]?|\d+)\b",
+    re.IGNORECASE,
+)
+
+
+def _colour_after_size(raw: str) -> str | None:
+    """The finish, when the vocabulary does not know it yet.
+
+    Lines put the finish after the storage size -- 'Pixel 10 Pro 128GB Porcelain',
+    'Galaxy S25 256GB Icyblue', 'Moto G06 4/64GB Arabesque' -- and every season brings
+    names no list has. Unread, a lot with an unknown finish had none at all, and a
+    buyer who named a colour saw it as a near miss. What is left after the size, once
+    market, grade, network and notes are taken out, is the finish.
+    """
+    sizes = list(_STORAGE_IN_LINE.finditer(raw))
+    if not sizes:
+        return None
+    size = sizes[-1]
+    tail = re.sub(r"\([^)]*\)|\[[^\]]*\]", " ", raw[size.end():])
+    tail = _TAIL_NOISE.sub(" ", tail)
+    words = re.findall(r"[A-Za-z][A-Za-z'-]+", tail)
+    if not 1 <= len(words) <= 3:
+        return None
+    return " ".join(w.capitalize() if w.islower() or w.isupper() else w for w in words)
+
+
+# Condition written into the product name rather than a Grade column: 'iPhone 16 128GB
+# Grade A Black', 'A+ grade', 'Refurbished', 'CPO'. Unread, a graded lot looked new to
+# matching and was quoted to buyers who wanted new phones.
+_GRADE_WORDING = re.compile(
+    r"\bgrade\s*([A-E]{1,2}[+\-]?)(?![A-Za-z0-9])|(?<![A-Za-z0-9])([A-E]{1,2}[+\-]?)\s*grade\b",
+    re.IGNORECASE,
+)
+_USED_WORDING = re.compile(
+    r"\b(refurbished|refurb|renewed|reconditioned|cpo|pre[\s-]?owned|used|"
+    r"second[\s-]?hand|open[\s-]?box|ex[\s-]?demo|demo|swap)\b",
+    re.IGNORECASE,
+)
+
+
+def grade_in_text(text: str | None) -> str | None:
+    """A grade stated inside a line of text, or None for a line that states none."""
+    if not text:
+        return None
+    match = _GRADE_WORDING.search(text)
+    if match:
+        return (match.group(1) or match.group(2)).upper()
+    used = _USED_WORDING.search(text)
+    if used:
+        word = re.sub(r"[\s-]", "", used.group(1).lower())
+        return {"refurb": "REFURBISHED", "renewed": "REFURBISHED",
+                "reconditioned": "REFURBISHED", "preowned": "USED",
+                "secondhand": "USED", "exdemo": "DEMO"}.get(word, word.upper())
+    return None
 
 
 def _grade_from(cell: str | None) -> str | None:
@@ -456,7 +522,15 @@ def _parse_ram_and_capacity(raw: str) -> tuple[int | None, int | None, str | Non
 
     # A size carrying a unit. Any the line goes on to call RAM is kept as the RAM
     # figure and passed over, rather than being taken for the storage.
+    # '256GB 12GB RAM': the RAM is named after the storage, so it is looked for across
+    # the whole line first. Taken in the order written, the storage was returned before
+    # the RAM was reached, and an 8GB lot and a 12GB lot looked the same.
     ram_named: int | None = None
+    for match in _CAPACITY.finditer(raw):
+        if (match.group("u") or "").lower() == "gb" and _NAMES_RAM.match(raw, match.end()):
+            if int(match.group("n")) in _VALID_RAM_GB:
+                ram_named = int(match.group("n"))
+                break
     implausible: int | None = None
     for match in _CAPACITY.finditer(raw):
         value = int(match.group("n"))

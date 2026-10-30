@@ -160,12 +160,31 @@ def _from_forward_block(body: str | None) -> tuple[str, str | None] | None:
     start = marker.end() if marker else 0
     window = body[start : start + 800]
 
-    match = _FORWARD_FROM.search(window)
+    # With a marker, the From: just after it is the header. Without one, only a real
+    # header block counts -- a From: line followed by Sent:/Date: and To:/Subject: --
+    # so a 'From:' in running text is never taken for the originator.
+    match = _FORWARD_FROM.search(window) if marker else None
+    if not match and marker is None:
+        # Outlook writes no marker at all, and puts the forwarder's signature ABOVE the
+        # forwarded header -- Sameer's runs to 800 characters on its own, so the
+        # supplier's From: line sat just past the window and Cellular Iberia's offer went
+        # to Review. Without a marker, accept only a real header block: a From: line
+        # followed within a few lines by Sent:/Date: and To:/Subject:, which a From: in
+        # a signature or in running text never is.
+        match = _OUTLOOK_BLOCK.search(body[:6000])
     if not match:
         return None
 
     name = (match.group(1) or "").strip()
     return match.group("email").lower(), (name or None)
+
+
+_OUTLOOK_BLOCK = re.compile(
+    r"^\s*From:\s*\"?([^\"<\n\r]*?)\"?\s*<?\s*(?P<email>[\w.+-]+@[\w-]+\.[\w.-]+)[^\n]*\n"
+    r"(?:[^\n]*\n){0,3}?\s*(?:Sent|Date|Gesendet|Datum|Envoy\u00e9|Enviado):[^\n]*\n"
+    r"(?:[^\n]*\n){0,3}?\s*(?:To|Subject|An|Betreff|\u00c0|Objet|Para|Asunto):",
+    re.IGNORECASE | re.MULTILINE,
+)
 
 
 def _first_external_address(
@@ -207,3 +226,44 @@ def _company_from_subject(subject: str | None) -> str | None:
     if len(company) < 3 or not re.search(r"[a-z]", company, re.IGNORECASE):
         return None
     return company
+
+
+# Words that make a subject's "company" a product or a description instead: 'Today's
+# Apple Watch offer', 'Apple iPhone 16e 128GB Black', 'Special offer'.
+_NOT_A_COMPANY = re.compile(
+    r"\b(?:today'?s?|daily|weekly|special|hot|best|our|my|the|stock|price|list|sheet|"
+    r"wts|wtb|fw|fwd|re|arrivals?|deals?|items?|products?|models?|"
+    r"apple|samsung|xiaomi|google|huawei|motorola|oneplus|oppo|sony|nintendo|"
+    r"iphone|ipad|galaxy|pixel|watch|airpods|macbook|redmi|tab|accessor(?:y|ies)|"
+    r"phones?|tablets?|laptops?|consoles?|update|offer|request)\b",
+    re.IGNORECASE,
+)
+
+PLACEHOLDER_DOMAIN = "no-address.invalid"
+
+
+def plausible_company(name: str | None) -> bool:
+    """Whether a name read off a subject line is safe to open a counterparty under.
+
+    'Vadimpex', 'OT Distribution', 'All in Srl' -- yes. Anything with a digit, a brand
+    or product word, or a generic opener is a description of the goods, and opening a
+    supplier called "Apple Watch" would file every later watch offer against it.
+    """
+    if not name:
+        return False
+    name = name.strip()
+    if not 3 <= len(name) <= 40 or re.search(r"\d", name):
+        return False
+    if len(name.split()) > 4:
+        return False
+    return not _NOT_A_COMPANY.search(name)
+
+
+def placeholder_address(name: str) -> str:
+    """A unique, undeliverable address for a supplier known only by name.
+
+    `.invalid` is reserved (RFC 2606): it can never belong to anyone, so nothing is
+    ever sent to it and it cannot collide with a real supplier's address.
+    """
+    slug = re.sub(r"[^a-z0-9]+", "-", name.lower()).strip("-") or "supplier"
+    return f"{slug}@{PLACEHOLDER_DOMAIN}"

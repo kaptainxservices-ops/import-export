@@ -6,8 +6,10 @@ complete list, that afternoon email closes every row it omits. Half the time it 
 complete list at all, but 'here are the 40 I forgot this morning', and reconciling it
 closes the other 450.
 
-So the first test is the one to read: the same email sequence that used to close a
-supplier's board now changes nothing until a person says so.
+These lists used to be held for a person, untouched, and that filled the Review tab. Now
+a later list the same day, in a category a whole list already covered today, is ADDED:
+new lines inserted, prices and quantities updated, nothing closed. The first test is
+still the one to read: the afternoon email cannot close the morning's stock.
 """
 
 from datetime import datetime, timedelta
@@ -89,30 +91,25 @@ def test_a_second_list_today_does_not_close_the_first_lists_rows(repo):
         repo,
     )
 
-    assert second.outcome == "held_for_review"
-    assert live_keys(repo) == before, "the board moved while a decision was pending"
+    assert second.outcome == "processed"
+    assert second.reconcile.closed == 0
+    assert live_keys(repo) == before, "the afternoon list closed the morning's stock"
     assert all(o.status == "live" for o in repo.live_offers())
 
 
-def test_the_held_rows_are_kept_for_the_person_deciding(repo):
+def test_the_second_lists_changes_still_reach_the_board(repo):
+    """Adding is not ignoring: what the afternoon list says about a lot is the newest
+    word on it. The iPhone dropped from 50 to 40, and the board says 40."""
     process_email(email(MORNING, message_id="<m1@x>", at=datetime(2026, 10, 16, 9, 0)), repo)
     result = process_email(
         email(AFTERNOON_PARTIAL, message_id="<m2@x>", at=datetime(2026, 10, 16, 16, 0)),
         repo,
     )
 
-    held = [rows for rows in repo.held_rows.values()]
-    assert len(held) == 1
-    assert len(held[0]) == 3
-    assert result.row_count == 3
-
-    # Each row already knows what it would do, so the review screen does not have to
-    # work it out on every open.
-    actions = {row["action"] for row in held[0]}
-    assert actions <= {"insert", "update", "refresh"}
-    # The iPhone 128GB dropped from 50 to 40, so it is an update carrying the old value.
-    changed = [r for r in held[0] if r["action"] == "update"]
-    assert changed and changed[0]["previous_quantity"] == 50
+    assert result.reconcile.updated == 1
+    iphone = next(o for o in repo.live_offers() if o.description == "Apple iPhone 16 128GB Black")
+    assert iphone.quantity == 40
+    assert repo.held_rows == {}, "nothing is waiting for a person"
 
 
 # ---------------------------------------------------------------- the identical case
@@ -220,7 +217,7 @@ def test_the_day_is_judged_by_the_emails_clock_not_the_rows(repo):
         repo,
     )
 
-    assert result.outcome == "held_for_review", (
+    assert result.reconcile.closed == 0, (
         "both emails arrived the same evening; only the row's write time says otherwise"
     )
 
@@ -254,22 +251,32 @@ def test_a_buying_list_does_not_hold_a_stock_list(repo):
     assert result.outcome != "held_for_review"
 
 
-def test_a_held_list_does_not_become_what_the_next_one_is_compared_against(repo):
-    """A held import changed nothing about the board. If it could stand in as the prior,
-    the third list of a day would be compared against rows nobody ever approved — and a
-    second list that happened to match the first held one would be waved through."""
+def test_a_third_list_the_same_day_still_closes_nothing(repo):
     process_email(email(MORNING, message_id="<m1@x>", at=datetime(2026, 10, 16, 9, 0)), repo)
     process_email(
         email(AFTERNOON_PARTIAL, message_id="<m2@x>", at=datetime(2026, 10, 16, 14, 0)), repo
     )
-
+    only_one = [HEADERS, ["Apple iPhone 16 128GB Black", "35", "679"]]
     third = process_email(
-        email(AFTERNOON_PARTIAL, message_id="<m3@x>", at=datetime(2026, 10, 16, 17, 0)), repo
+        email(only_one, message_id="<m3@x>", at=datetime(2026, 10, 16, 17, 0)), repo
     )
 
-    # Identical to the HELD list, but that one is not on the board — so this is still a
-    # list that differs from what the board holds, and still needs a person.
-    assert third.outcome == "held_for_review"
+    assert third.reconcile.closed == 0
+    assert len(repo.live_offers()) == 4
+
+
+def test_tomorrows_first_list_closes_what_sold_today(repo):
+    """Adding without closing defers a closure by a day, it does not lose it."""
+    process_email(email(MORNING, message_id="<m1@x>", at=datetime(2026, 10, 16, 9, 0)), repo)
+    process_email(
+        email(AFTERNOON_PARTIAL, message_id="<m2@x>", at=datetime(2026, 10, 16, 16, 0)), repo
+    )
+    tomorrow = process_email(
+        email(AFTERNOON_PARTIAL, message_id="<m3@x>", at=datetime(2026, 10, 17, 9, 0)), repo
+    )
+
+    assert tomorrow.reconcile.closed == 1
+    assert not any("Pixel" in o.description for o in repo.live_offers())
 
 
 def test_a_different_supplier_is_untouched_by_the_rule(repo):
@@ -290,13 +297,11 @@ def test_the_import_log_says_what_happened_and_why(repo):
         email(AFTERNOON_PARTIAL, message_id="<m2@x>", at=datetime(2026, 10, 16, 16, 0)), repo
     )
 
-    held = repo.imports[-1].record
-    assert held.status == "held_for_review"
-    assert held.offers_inserted == held.offers_updated == held.offers_closed == 0
-    assert held.side == "sell"
-    assert held.content_hash
-    assert held.compared_to_import_id == repo.imports[0].id
-    assert held.difference_summary and held.difference_summary != "identical"
+    second = repo.imports[-1].record
+    assert second.status == "applied"
+    assert second.offers_closed == 0
+    assert "closed nothing" in second.notes
+    assert sorted(second.categories) == ["phone"]
 
 
 def test_an_applied_import_records_what_the_list_said(repo):

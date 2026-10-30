@@ -19,12 +19,14 @@ from app.brain.reconcile import Action, ExistingOffer, IncomingOffer
 from app.brain.sameday import PriorImport
 from app.config import get_settings
 from app.db.models import (
+    NEEDS_A_PERSON,
     Allocation,
     BoardOffer,
     CounterpartyConfig,
     Deal,
     EmailRecord,
     ImportRecord,
+    ListedToday,
     ReviewItem,
     StoredEmail,
     SupplierSummary,
@@ -283,7 +285,10 @@ class SupabaseRepository:
         # from it is a row about to be closed as sold.
         rows = _all_rows(
             lambda: self.client.table("offers")
-            .select("id,identity_key,quantity,unit_price,currency,status,last_confirmed_at")
+            .select(
+                "id,identity_key,quantity,unit_price,currency,status,last_confirmed_at,"
+                "category,source_email_id"
+            )
             .eq("tenant_id", tenant_id)
             .eq("counterparty_id", counterparty_id)
             .eq("side", side)
@@ -298,6 +303,9 @@ class SupabaseRepository:
                 unit_price=float(row["unit_price"]) if row.get("unit_price") is not None else None,
                 currency=row.get("currency"),
                 status=row.get("status", "live"),
+                last_confirmed_at=_parse_timestamp(row.get("last_confirmed_at")),
+                category=row.get("category"),
+                source_email_id=row.get("source_email_id"),
             )
             for row in rows
         ]
@@ -426,6 +434,15 @@ class SupabaseRepository:
             self.client.table("offer_changes").insert(batch).execute()
 
     def record_import(self, record: ImportRecord) -> str:
+        try:
+            return self._insert_import(record)
+        except Exception as error:  # noqa: BLE001
+            if "categories" not in str(error) or not self._has_import_categories:
+                raise
+            self._missing_import_categories()
+            return self._insert_import(record)
+
+    def _insert_import(self, record: ImportRecord) -> str:
         row = (
             self.client.table("imports")
             .insert(
@@ -455,11 +472,58 @@ class SupabaseRepository:
                         if record.source_received_at
                         else None
                     ),
+                    **(
+                        {"categories": record.categories}
+                        if record.categories is not None and self._has_import_categories
+                        else {}
+                    ),
                 }
             )
             .execute()
         ).data[0]
         return row["id"]
+
+    # Whether imports.categories exists (migration 0018). Assumed until an insert says
+    # otherwise: a backend deployed before the migration must keep filing lists, not
+    # fail every one of them on an unknown column.
+    _has_import_categories = True
+
+    def lists_since(
+        self, tenant_id: str, counterparty_id: str, side: str, since: datetime
+    ) -> list[ListedToday]:
+        columns = "source_received_at,created_at,is_complete_list"
+        if self._has_import_categories:
+            columns += ",categories"
+        try:
+            rows = (
+                self.client.table("imports").select(columns)
+                .eq("tenant_id", tenant_id)
+                .eq("counterparty_id", counterparty_id)
+                .eq("side", side)
+                .in_("status", sorted(_APPLIED_STATUSES))
+                .gte("source_received_at", since.isoformat())
+                .limit(200)
+                .execute()
+            ).data or []
+        except Exception as error:  # noqa: BLE001
+            if "categories" in str(error):
+                self._missing_import_categories()
+                return self.lists_since(tenant_id, counterparty_id, side, since)
+            raise
+        out = []
+        for row in rows:
+            arrived = _parse_timestamp(row.get("source_received_at") or row.get("created_at"))
+            if arrived is not None:
+                out.append(ListedToday(arrived, row.get("is_complete_list"), row.get("categories")))
+        return out
+
+    def _missing_import_categories(self) -> None:
+        if SupabaseRepository._has_import_categories:
+            SupabaseRepository._has_import_categories = False
+            log.warning(
+                "imports.categories does not exist -- run supabase/migrations/"
+                "0018_import_categories.sql. Same-day lists add without closing until then."
+            )
 
     def last_applied_import(
         self, tenant_id: str, counterparty_id: str, side: str
@@ -717,6 +781,7 @@ class SupabaseRepository:
             .eq("tenant_id", tenant_id)
             .is_("approved_at", "null")
             .is_("rejected_at", "null")
+            .in_("status", sorted(NEEDS_A_PERSON))
             .order("created_at", desc=True)
             .limit(limit)
             .execute()
@@ -1026,6 +1091,7 @@ class SupabaseRepository:
                     staleness_hours=row.get("staleness_hours"),
                     typical_row_count=row.get("typical_row_count"),
                     live_offers=offers.count or 0,
+                    created_at=_parse_timestamp(row.get("created_at")),
                     last_seen_at=(
                         _timestamp(recent[0].get("last_confirmed_at")) if recent else None
                     ),
@@ -1340,7 +1406,9 @@ def _counterparty(row: dict) -> CounterpartyConfig:
 
 
 def _classification(side: str) -> str:
-    return {"sell": "seller_offer", "buy": "buyer_request"}.get(side, "unclassified")
+    return {"sell": "seller_offer", "buy": "buyer_request", "irrelevant": "irrelevant"}.get(
+        side, "unclassified"
+    )
 
 
 def _side(classification: str | None) -> str:

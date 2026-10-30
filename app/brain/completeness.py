@@ -27,6 +27,14 @@ _COMPLETE_SIGNALS = re.compile(
     re.IGNORECASE,
 )
 
+# 'WTS' and 'WTB' head every message in this trade, a whole catalogue and a one-line
+# "WTB 50x iPhone 15" alike. On a long list they mean the list; on a few lines they
+# mean an order, and an order is an addition: reading "WTB 50x iPhone 15" as the buyer's
+# complete demand closed every other requirement they had open.
+_TRADE_PREFIX_ONLY = re.compile(
+    r"^(?:wts|want\s*to\s*sell|wtb|want\s*to\s*buy)$", re.IGNORECASE
+)
+
 # Wording that means "here is something extra".
 _PARTIAL_SIGNALS = re.compile(
     r"\b(?:just\s*(?:got|arrived|in)|new\s*arrival|additional|extra\s*stock|"
@@ -70,10 +78,28 @@ def detect_list_completeness(
     if partial_match and not complete_match:
         return False, f"wording suggests a supplement: {partial_match.group(0)!r}"
 
+    # Whole-list wording with no supplement wording is believed, however short. A short
+    # one is then the broken-attachment case -- 'PRICE LIST' and a third of the usual
+    # rows -- and reconcile's row-count guard refuses the closures AND flags the import,
+    # so a person sees it. Calling it undecided here would close nothing too, but
+    # silently: a malformed sheet would never reach anyone's eyes.
+    short_order = _only_trade_prefix(text, row_count, typical_row_count)
+    if complete_match and not partial_match and not short_order:
+        detail = f"subject or body says {complete_match.group(0)!r}"
+        if typical_row_count:
+            detail += f"; {row_count} rows against a usual {typical_row_count}"
+        return True, detail
+
     if typical_row_count and row_count < typical_row_count * PARTIAL_RATIO:
         return None, (
             f"{row_count} rows against a usual {typical_row_count}; too small to treat "
             f"as a full list"
+        )
+
+    if _only_trade_prefix(text, row_count, typical_row_count):
+        return None, (
+            f"only {row_count} rows under {complete_match.group(0)!r}: an order or an "
+            f"offer to add, not a whole list"
         )
 
     if complete_match:
@@ -91,3 +117,18 @@ def detect_list_completeness(
     # A large list with no signals either way. Suppliers send complete lists, so this
     # leans complete — but it is the weakest case, and it is recorded as such.
     return True, f"{row_count} rows and no wording either way; assumed complete"
+
+
+def _only_trade_prefix(text: str, row_count: int, typical: int | None) -> bool:
+    """A few lines whose only 'whole list' wording is WTS or WTB: an order, not a list.
+
+    Judged against the sender's own size. Two lines from a buyer who keeps three
+    requirements open is their list; one line from a buyer with a hundred is an order.
+    """
+    found = list(_COMPLETE_SIGNALS.finditer(text))
+    return (
+        bool(found)
+        and row_count <= SMALL_LIST_ROWS
+        and all(_TRADE_PREFIX_ONLY.match(m.group(0)) for m in found)
+        and (typical is None or row_count < typical * 0.5)
+    )

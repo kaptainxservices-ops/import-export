@@ -55,6 +55,18 @@ def repo():
     set_repository(None)
 
 
+@pytest.fixture(autouse=True)
+def _every_list_waits(request, monkeypatch):
+    """Clean lists no longer wait in Review. The approve and reject machinery below is
+    still what a flagged list goes through, so these tests widen the queue to every
+    status to exercise it; the tests marked `real_queue` check the real filter."""
+    if "real_queue" not in request.keywords:
+        monkeypatch.setattr(
+            "app.db.memory.NEEDS_A_PERSON",
+            frozenset({"applied", "failed", "flagged_low_row_count", "flagged_partial_list"}),
+        )
+
+
 @pytest.fixture
 def client(repo) -> TestClient:
     from app.main import app
@@ -276,3 +288,36 @@ def test_another_tenants_row_is_not_reachable(client, repo):
     offer = _flagged(repo, tenant_id="tenant-2")
     assert client.patch(f"/review/rows/{offer.id}", json={"quantity": 1}).status_code == 404
     assert repo.offers[offer.id].needs_review is True
+
+
+# ---------------------------------------------------------------- who waits
+
+
+@pytest.mark.real_queue
+def test_a_clean_list_does_not_wait_for_anyone(client, repo):
+    """Every list used to sit in Review until someone clicked approve; that was most of
+    the tab. A list that read cleanly is on the board and needs nobody."""
+    process_email(_email(), repo)
+
+    assert client.get("/review/imports").json()["waiting"] == 0
+
+
+@pytest.mark.real_queue
+def test_an_unreadable_list_waits(client, repo):
+    unreadable = [["Hello"], ["Please see the attached file."]]
+    process_email(_email(rows=unreadable), repo)
+
+    body = client.get("/review/imports").json()
+    assert body["waiting"] == 1
+
+
+@pytest.mark.real_queue
+def test_a_whole_list_that_collapsed_waits(client, repo):
+    """'PRICE LIST' and a third of the usual rows: a broken attachment, most likely.
+    Nothing was closed, and a person should see it."""
+    process_email(_email(rows=BIG_ROWS), repo)
+    process_email(_email(message_id="<m2@x>", rows=BIG_ROWS[:3], at=TUESDAY), repo)
+
+    body = client.get("/review/imports").json()
+    assert body["waiting"] == 1
+    assert repo.imports[-1].record.status == "flagged_low_row_count"

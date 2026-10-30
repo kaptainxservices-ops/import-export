@@ -157,6 +157,9 @@ export interface Supplier {
   live_offers: number;
   last_seen_at: string | null;
   sample_prices: string[];
+  created_at?: string | null;
+  /** Opened from a retyped offer's subject line; the real address is still missing. */
+  no_address?: boolean;
 }
 
 export interface Suppliers {

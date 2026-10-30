@@ -14,6 +14,7 @@ offer.
 
 from __future__ import annotations
 
+from datetime import datetime
 from typing import Protocol
 
 from app.brain.reconcile import Action, ExistingOffer, IncomingOffer
@@ -25,6 +26,7 @@ from app.db.models import (
     Deal,
     EmailRecord,
     ImportRecord,
+    ListedToday,
     ReviewItem,
     StoredEmail,
     SupplierSummary,
@@ -89,6 +91,14 @@ class Repository(Protocol):
         actions: list[Action],
         incoming_by_key: dict[str, IncomingOffer],
     ) -> None:
+        ...
+
+    def lists_since(
+        self, tenant_id: str, counterparty_id: str, side: str, since: datetime
+    ) -> list[ListedToday]:
+        """Applied lists from this counterparty and side that arrived after `since`,
+        by the email's clock. What the same-day rule asks: which categories has a whole
+        list already confirmed today?"""
         ...
 
     def last_applied_import(

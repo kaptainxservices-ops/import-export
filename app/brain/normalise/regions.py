@@ -49,6 +49,14 @@ _FAMILY = {
 }
 
 
+# Capitals only, as whole words: suppliers write the country of the box this way.
+_EU_COUNTRIES = (
+    "DE", "DACH", "GER", "IT", "ITA", "FR", "FRA", "ES", "ESP", "NL", "PL", "AT", "BE",
+    "PT", "IE", "SE", "DK", "FI", "CZ", "SK", "HU", "RO", "GR", "BG", "HR", "SI", "LU",
+    "EE", "LV", "LT",
+)
+
+
 def region_family(code: str | None) -> str | None:
     """The market a region code belongs to: 'ZD/A' and 'EU' are both EU."""
     if not code:
@@ -136,6 +144,7 @@ def normalise_region_code(raw: str | None) -> str | None:
     if re.search(r"(?<![a-z])eu(?![a-z])", lowered_all):
         return "EU"
 
+
     # Only codes Apple actually uses. 'A/A+' is a grade, not a market, and reading
     # every 'X/A' as a region turned it into region 'A/A' -- harmless while region sat
     # outside identity, a phantom second lot once it is part of it.
@@ -151,6 +160,18 @@ def normalise_region_code(raw: str | None) -> str | None:
     for phrase, code in _PHRASES.items():
         if phrase in lowered:
             return code
+
+    # 'Galaxy S25 256GB Navy US': a market written as a bare capitalised token. Only in
+    # capitals -- 'us' in running text is a pronoun -- and only as a whole word.
+    if re.search(r"(?<![A-Za-z])(?:US|USA)(?![A-Za-z])", text):
+        return "US"
+    if re.search(r"(?<![A-Za-z])UK(?![A-Za-z])", text):
+        return "UK"
+    # A European country written as the market: 'iPhone 16e 128GB Black DE', 'WHITE ITA',
+    # 'A175 128GB DACH'. Every one of them is EU stock -- and an India-spec buyer was
+    # being offered it, because the line stated no market anyone could read.
+    if re.search(rf"(?<![A-Za-z])(?:{'|'.join(_EU_COUNTRIES)})(?![A-Za-z])", text):
+        return "EU"
 
     squashed = _SQUASHED.search(text.upper())
     if squashed and squashed.group(1) in _CODES:

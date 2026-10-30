@@ -11,6 +11,7 @@ import { ReviewQueue } from "./components/ReviewQueue";
 import { SourceDrawer } from "./components/SourceDrawer";
 import { Suppliers } from "./components/Suppliers";
 import { useMatchAlerts } from "./hooks/useMatchAlerts";
+import { useNewCounterparties } from "./hooks/useNewCounterparties";
 import { useClients, useSupplierNames } from "./hooks/useOffers";
 import { fetchReviewQueue, type MatchBoardRow, type MatchSort } from "./lib/api";
 import { supabase } from "./lib/supabase";
@@ -81,6 +82,7 @@ function Board({ email }: { email: string }) {
     setMatchSort("new");
   }
 
+  const newCounterparties = useNewCounterparties(email, tab === "suppliers");
   const matchAlerts = useMatchAlerts(email, tab === "matches", (row) =>
     row ? openRequirement(row) : showNewMatches(),
   );
@@ -153,6 +155,11 @@ function Board({ email }: { email: string }) {
             onClick={() => switchTab("suppliers")}
           >
             Counterparties
+            {newCounterparties.newCount > 0 && (
+              <span className="nav-count new" title="New since you last looked">
+                {newCounterparties.newCount}
+              </span>
+            )}
           </button>
         </nav>
 
@@ -221,7 +228,7 @@ function Board({ email }: { email: string }) {
         ) : tab === "review" ? (
           <ReviewQueue onResolved={() => setResolved((n) => n + 1)} />
         ) : tab === "suppliers" ? (
-          <Suppliers />
+          <Suppliers fresh={newCounterparties.highlight} />
         ) : null}
       </main>
 

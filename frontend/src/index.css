@@ -1655,3 +1655,6 @@ h3.section:first-child { margin-top: 0; }
   margin-top: 6px;
   font-size: 13px;
 }
+
+/* A counterparty that appeared since the tab was last opened. */
+tr.is-new td { background: var(--accent-soft); }

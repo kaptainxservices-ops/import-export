@@ -54,6 +54,12 @@ def email(rows, *, message_id, at):
     )
 
 
+@pytest.fixture(autouse=True)
+def _hold_second_lists(monkeypatch):
+    """Second lists are no longer held; settling ones held before must still work."""
+    monkeypatch.setattr("app.pipeline.HOLD_SECOND_LISTS", True)
+
+
 @pytest.fixture
 def held(repo):
     """A board with the morning list on it, and an afternoon list waiting."""

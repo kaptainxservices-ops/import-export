@@ -15,9 +15,11 @@ from itertools import count
 from app.brain.reconcile import Action, ExistingOffer, IncomingOffer
 from app.brain.sameday import PriorImport
 from app.db.models import (
+    NEEDS_A_PERSON,
     CounterpartyConfig,
     EmailRecord,
     ImportRecord,
+    ListedToday,
     ReviewItem,
     StoredEmail,
     SupplierSummary,
@@ -49,6 +51,7 @@ class StoredOffer:
     review_reason: str | None = None
     first_seen_at: datetime = field(default_factory=datetime.utcnow)
     last_confirmed_at: datetime = field(default_factory=datetime.utcnow)
+    category: str | None = None
 
 
 # An import that reached the board. The flagged ones count: they were applied, they
@@ -167,6 +170,8 @@ class InMemoryRepository:
                 currency=o.currency,
                 status=o.status,
                 last_confirmed_at=o.last_confirmed_at,
+                category=o.category,
+                source_email_id=o.source_email_id,
             )
             for o in self.offers.values()
             if o.tenant_id == tenant_id and o.counterparty_id == counterparty_id
@@ -215,6 +220,7 @@ class InMemoryRepository:
                     needs_review=bool(incoming.fields.get("needs_review")),
                     review_reason=incoming.fields.get("review_reason"),
                     confidence=incoming.fields.get("confidence"),
+                    category=incoming.fields.get("category"),
                     first_seen_at=now,
                     last_confirmed_at=now,
                 )
@@ -273,6 +279,24 @@ class InMemoryRepository:
         import_id = self._next("import")
         self.imports.append(StoredImport(id=import_id, record=record))
         return import_id
+
+    def lists_since(
+        self, tenant_id: str, counterparty_id: str, side: str, since: datetime
+    ) -> list[ListedToday]:
+        out = []
+        for stored in self.imports:
+            record = stored.record
+            arrived = record.source_received_at or stored.created_at
+            if (
+                record.tenant_id == tenant_id
+                and record.counterparty_id == counterparty_id
+                and record.side == side
+                and record.status in _APPLIED_STATUSES
+                and arrived is not None
+                and _aware(arrived) >= _aware(since)
+            ):
+                out.append(ListedToday(arrived, record.is_complete_list, record.categories))
+        return out
 
     def last_applied_import(
         self, tenant_id: str, counterparty_id: str, side: str
@@ -459,6 +483,8 @@ class InMemoryRepository:
             if record.tenant_id != tenant_id:
                 continue
             if stored.approved_at or stored.rejected_at:
+                continue
+            if record.status not in NEEDS_A_PERSON:
                 continue
 
             counterparty = self.counterparties.get(record.counterparty_id or "")
@@ -692,3 +718,9 @@ class InMemoryRepository:
         """Push every offer's confirmation time back, to rehearse a later morning."""
         for offer in self.offers.values():
             offer.last_confirmed_at -= timedelta(hours=hours)
+
+
+def _aware(moment: datetime) -> datetime:
+    from datetime import timezone
+
+    return moment if moment.tzinfo else moment.replace(tzinfo=timezone.utc)  # noqa: UP017

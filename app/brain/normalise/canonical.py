@@ -194,7 +194,8 @@ _NOISE = {
     "stock", "ready", "smartphone", "mobile", "handset", "cellphone", "the", "with",
     "and", "of", "pcs", "pc", "units", "unit", "only", "ex", "exw", "fob", "pack",
     "openbox", "refurbished", "refurb", "used", "grade", "graded", "cpo", "mixed",
-    "colour", "colours", "color", "colors", "assorted", "any", "random",
+    "colour", "colours", "color", "colors", "assorted", "any", "random", "all", "mix",
+    "welcome", "welcomed", "options", "versions",
     "ram", "rom", "memory", "storage",
     # Edition is read into a column of its own (see product._edition) and compared
     # there; in the key it would split 'S24 Ultra' from 'S24 Ultra Ent. Ed.' twice.
@@ -286,15 +287,28 @@ def _canonical(text: str | None, brand: str | None, colour: str | None) -> Canon
     body = _EAN.sub(" ", body)
     body = _GRADE_PHRASE.sub(" ", body)
     body = _RAM_PAIR.sub(" ", body)
-    body = _SIZES.sub(" ", body)
-    # '12gb ram' leftovers, '8gb' after the storage was taken.
-    body = re.sub(r"(?<![a-z0-9])\d{1,2}\s*gb(?![a-z0-9])", " ", body)
 
+    # Wi-Fi or cellular is an attribute that is often written after the storage size
+    # ('iPad Air 11 M3 128GB Wi-Fi'), so it is read before the tail is dropped below.
     connectivity = None
     if _WIFI.search(body):
         connectivity = "wifi"
     elif _CELLULAR.search(body):
         connectivity = "cellular"
+
+    # Everything after the storage size is finish, market and notes, never the model:
+    # 'Pixel 10 Pro 128GB Porcelain', 'Galaxy S25 Ultra 512GB Titanium Silverblue',
+    # 'iPhone 16 128GB Black ZD/A'. Every season brings colour names no vocabulary has
+    # yet, and each one left in the key made the same phone a different model -- a near
+    # miss instead of a fill. Kept only when the size comes first and nothing names the
+    # model before it ('128GB iPhone 16').
+    size = _SIZES.search(body)
+    if size and re.search(r"[a-z]{2,}", body[: size.start()]):
+        body = body[: size.start()]
+    body = _SIZES.sub(" ", body)
+    # '12gb ram' leftovers, '8gb' after the storage was taken.
+    body = re.sub(r"(?<![a-z0-9])\d{1,2}\s*gb(?![a-z0-9])", " ", body)
+
     body = _NETWORK.sub(" ", body)
     body = _WIFI.sub(" ", body)
     body = re.sub(r"(?<![a-z0-9])cellular(?![a-z0-9])", " ", body)

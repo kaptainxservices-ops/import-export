@@ -38,6 +38,12 @@ AFTERNOON = [
 ]
 
 
+@pytest.fixture(autouse=True)
+def _hold_second_lists(monkeypatch):
+    """Second lists are no longer held; the screen still settles ones held before."""
+    monkeypatch.setattr("app.pipeline.HOLD_SECOND_LISTS", True)
+
+
 @pytest.fixture
 def repo():
     store = InMemoryRepository([TENANT])

@@ -269,7 +269,15 @@ def fill_requirement(
 
     if requirement.quantity:
         priced = [s for s in exact if s.unit_price is not None]
-        options.extend(_combinations(requirement, priced, max_suppliers))
+        # One currency per combination. Forty at EUR 600 and sixty at USD 650 do not
+        # blend into a buy price -- the sum adds euros to dollars and puts the result on
+        # the board as a cost. Each currency's lots are combined among themselves, and
+        # a lot with no stated currency only with others that state none.
+        by_currency: dict[str | None, list[Supply]] = {}
+        for item in priced:
+            by_currency.setdefault((item.currency or "").upper() or None, []).append(item)
+        for group in by_currency.values():
+            options.extend(_combinations(requirement, group, max_suppliers))
 
     if include_near_misses:
         near = [s for s in candidates if not _is_exact(requirement, s) and _is_near(requirement, s)]
@@ -808,6 +816,17 @@ def _differences(requirement: Requirement, item: Supply) -> list[Difference]:
     if requirement.network and item.network and requirement.network != item.network:
         add("network", "Network", item.network.upper(), requirement.network.upper(),
             f"{item.network.upper()}, wanted {requirement.network.upper()}")
+    elif (
+        bool(requirement.network) != bool(item.network)
+        and _sold_in_both_networks(requirement.model_key or item.model_key)
+    ):
+        # A Galaxy A16 and an A16 5G are two phones (A165 and A166) under one name.
+        # Where a line is sold both ways, 5G on one side and nothing on the other is a
+        # question to ask, not a fill -- elsewhere (A56, S25: 5G only) the omission is
+        # just shorthand and is ignored.
+        offered = (item.network or "not stated").upper()
+        wanted = (requirement.network or "not stated").upper()
+        add("network", "Network", offered, wanted, f"network {offered}, wanted {wanted}")
 
     if (
         requirement.connectivity
@@ -848,6 +867,16 @@ def _lot_notes(requirement: Requirement | None, item: Supply) -> list[str]:
     if requirement is not None and requirement.grade and not item.grade:
         notes.append(f"seller did not state a grade; buyer wants {requirement.grade}")
     return notes
+
+
+# Lines sold in a 4G and a 5G version under the same name. Elsewhere only one exists.
+_BOTH_NETWORKS = re.compile(
+    r"^(?:samsung:a[01]\d(?!\d)|samsung:m[01]\d(?!\d)|xiaomi:redmi(?:note)?1[2-5](?!\d))"
+)
+
+
+def _sold_in_both_networks(model_key: str | None) -> bool:
+    return bool(model_key and _BOTH_NETWORKS.match(model_key))
 
 
 def _colour_ok(requirement: Requirement, item: Supply) -> bool:
@@ -951,7 +980,16 @@ def _price_order(item: Supply) -> float:
 
 
 def _same(left: str | None, right: str | None) -> bool:
-    return (left or "").strip().lower() == (right or "").strip().lower()
+    """Equal as written, ignoring case, spacing and word order: 'Icy Blue' is
+    'Icyblue', and 'Titanium Black' is 'Black Titanium'."""
+    def key(text: str | None) -> str:
+        words = re.findall(r"[a-z0-9]+", (text or "").lower())
+        return "".join(sorted(words)) if len(words) > 1 else "".join(words)
+
+    def joined(text: str | None) -> str:
+        return "".join(re.findall(r"[a-z0-9]+", (text or "").lower()))
+
+    return key(left) == key(right) or joined(left) == joined(right)
 
 
 def _currency_mismatch(left: str | None, right: str | None) -> bool:

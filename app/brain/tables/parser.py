@@ -30,9 +30,11 @@ from app.brain.normalise import (
     parse_price,
     parse_quantity,
 )
-from app.brain.normalise.product import normalise_gtin
+from app.brain.normalise.product import grade_in_text, normalise_gtin
+from app.brain.normalise.regions import normalise_region_code
 from app.brain.tables.columns import (
     ColumnMap,
+    classify_header_cell,
     detect_header_row,
     infer_description_column,
     is_wordy,
@@ -193,6 +195,18 @@ def parse_grid(
         column_map = map_columns(grid.rows[header_index])
         column_map.header_row = header_index
 
+        # A header can name the wrong column as the product: a seller's own item
+        # number under a heading the vocabulary reads as 'item'. Every row of such a
+        # column is a bare number, so every row was discarded and the list read as
+        # empty. When the chosen column is mostly codes and another is mostly words,
+        # the words are the product.
+        chosen = column_map.columns.get("description")
+        if chosen is not None and not _mostly_words(grid.rows, header_index, chosen):
+            taken = set(column_map.columns.values()) - {chosen}
+            better = infer_description_column(grid.rows, header_index, taken | {chosen})
+            if better is not None:
+                column_map.columns["description"] = better
+
         # A blank header cell over the product column is common: GOtel labels every
         # column except the one naming the product.
         if "description" not in column_map.columns:
@@ -239,6 +253,12 @@ def parse_grid(
     rows: list[TableRow] = []
     section: str | None = None
     skipped = 0
+    # The header's own first cell can be the first section's name: 'Brand New Stock (UK
+    # Spec) | Qty | Price'. It describes the rows under it until the next one.
+    if header_index >= 0 and column_map.get("description") == 0:
+        first = (grid.rows[header_index][0] or "").strip() if grid.rows[header_index] else ""
+        if len(first.split()) >= 3 and classify_header_cell(first) == "description":
+            section = first
 
     for offset, raw in enumerate(grid.rows[header_index + 1 :], start=header_index + 2):
         heading = _as_section_heading(raw)
@@ -254,6 +274,12 @@ def parse_grid(
         # GOtel reprints its header every few rows as a visual separator. Parsed as
         # data those become offers named 'EAN' priced at 'Price'.
         if looks_like_header(raw, minimum=3):
+            # A header reprinted over a new section names the section in its first
+            # cell: MACWAY's 'Brand New Stock (UK Spec)' rows, then 'CPO & ASIS (Non EU -
+            # Spec)'. The rows below are a different condition and market.
+            first = (raw[0] or "").strip() if raw else ""
+            if first and header_index >= 0 and first != (grid.rows[header_index][0] or "").strip():
+                section = first
             skipped += 1
             continue
 
@@ -265,6 +291,16 @@ def parse_grid(
         rows.append(row)
 
     return ParsedTable(rows=rows, column_map=column_map, source=grid.source, skipped_rows=skipped)
+
+
+def _mostly_words(rows: list[list[str]], header_index: int, column: int, sample: int = 40) -> bool:
+    values = [
+        r[column].strip() for r in rows[header_index + 1 : header_index + 1 + sample]
+        if column < len(r) and r[column].strip()
+    ]
+    if len(values) < 3:
+        return True
+    return sum(1 for v in values if is_wordy(v)) / len(values) >= 0.5
 
 
 def _build_row(
@@ -334,8 +370,10 @@ def _build_row(
         colour=cell("colour") or None,
         capacity=cell("capacity") or None,
         ram=cell("ram") or None,
-        grade=cell("grade") or None,
-        region=cell("region") or None,
+        # A section can say what its rows are when the rows do not: 'Brand New Stock
+        # (UK Spec)' over one block, 'CPO & ASIS (Non EU - Spec)' over the next.
+        grade=cell("grade") or (grade_in_text(section) if section else None),
+        region=cell("region") or (normalise_region_code(section) if section else None),
         quantity=quantity,
         price=price,
         currency=row_currency,

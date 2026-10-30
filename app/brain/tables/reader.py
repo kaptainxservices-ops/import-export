@@ -58,16 +58,62 @@ def read_html_tables(html: str | None, min_rows: int = MIN_TABLE_ROWS) -> list[G
         if any(len(inner.find_all("tr")) >= min_rows for inner in table.find_all("table")):
             continue
 
-        rows = []
-        for tr in table.find_all("tr"):
-            cells = [_clean(td.get_text(" ", strip=True)) for td in tr.find_all(["td", "th"])]
-            if any(cells):
-                rows.append(cells)
+        # A table nested in a cell is one of two things. In a row that has content of
+        # its own it is formatting -- MACWAY's one-row table inside its header cell, a
+        # price wrapped in a table of its own -- and its text belongs to that cell.
+        # Counted as cells instead, it gave MACWAY's header five columns over three-
+        # column data and the list read as nothing, every day. In a row that is nothing
+        # but a wrapper, the nested table's rows ARE the content: Yukatel's few products
+        # per tiny table. A nested table big enough to be a list of its own is never
+        # flattened into a cell: it is read as its own grid.
+        rows: list[list[str]] = []
+        _collect(table, rows, min_rows)
 
-        if len(rows) >= min_rows:
+        # Whether the table is big enough to be a list is judged as before, by every row
+        # in it, nested ones included: Yukatel's three-product tables inside a one-row
+        # wrapper are a list together, and only the content rule above changed.
+        size = sum(
+            1 for tr in table.find_all("tr")
+            if any(td.get_text(strip=True) for td in tr.find_all(["td", "th"]))
+        )
+        if rows and size >= min_rows:
             grids.append(Grid(rows=rows, source=f"table {index + 1}"))
 
     return grids
+
+
+def _collect(table, out: list[list[str]], min_rows: int) -> None:
+    for tr in table.find_all("tr"):
+        if tr.find_parent("table") is not table:
+            continue
+        cells = tr.find_all(["td", "th"], recursive=False)
+        nested = [t for t in tr.find_all("table") if t.find_parent("table") is table]
+        if nested and not any(_own_text(td, table) for td in cells):
+            for inner in nested:
+                if len(inner.find_all("tr")) < min_rows:
+                    _collect(inner, out, min_rows)
+            continue
+        texts = [_clean(_text_without_big_tables(td, min_rows)) for td in cells]
+        if any(texts):
+            out.append(texts)
+
+
+def _text_without_big_tables(cell, min_rows: int) -> str:
+    """A cell's text including small nested tables (formatting), excluding any nested
+    table big enough to be a list of its own."""
+    big = [t for t in cell.find_all("table") if len(t.find_all("tr")) >= min_rows]
+    return " ".join(
+        piece.strip() for piece in cell.find_all(string=True)
+        if piece.strip() and not any(b in piece.parents for b in big)
+    )
+
+
+def _own_text(cell, owner) -> str:
+    """A cell's text without the text of any table nested inside it."""
+    return " ".join(
+        piece.strip() for piece in cell.find_all(string=True)
+        if piece.strip() and piece.find_parent("table") is owner
+    )
 
 
 def read_spreadsheet(data: bytes, filename: str = "") -> list[Grid]:

@@ -54,6 +54,10 @@ _ALIASES: dict[str, tuple[str, ...]] = {
     "region": ("spec", "region", "version", "market", "variant region", "specs region"),
     "code": (
         "code", "codes", "partcode", "part code", "part no", "part number", "p n", "pn",
+        # A seller's own catalogue number, not the product: HITISY heads its list
+        # 'Item No. | Model | EAN | EUR', and 'item' alone means description.
+        "item no", "item nr", "item number", "item code", "item id", "art no", "art nr",
+        "article no", "article nr", "article number", "artikel nr", "artikelnr",
         "artikelnummer", "artnr", "sku", "mpn", "ref", "reference", "codice", "kod",
     ),
     # Plenty of sheets give storage its own column and leave it out of the product
@@ -189,11 +193,23 @@ def normalise_header(cell: str | None) -> str:
     return re.sub(r"\s+", " ", text).strip().lower()
 
 
+_SECTION_HEADING = re.compile(
+    r"\b(?:brand new|new stock|stock uk|stock eu|spec|cpo|asis|as is|refurbished|"
+    r"pre owned|graded stock|used stock)\b"
+)
+
+
 def classify_header_cell(cell: str | None) -> str | None:
     """Which field a header cell names, or None."""
     text = normalise_header(cell)
     if not text:
         return None
+    # 'Brand New Stock (UK Spec)', 'CPO & ASIS (Non EU - Spec)': MACWAY heads its
+    # product column with what the section below it is. That is a product heading, not
+    # a Brand column ('brand new' is a condition) and not a Stock quantity.
+    # Several words, always: a bare 'Spec' heads Whitehawk's market column.
+    if len(text.split()) >= 3 and _SECTION_HEADING.search(text):
+        return "description"
 
     if text in _CURRENCY_ONLY:
         return "price"

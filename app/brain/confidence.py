@@ -110,6 +110,7 @@ def score_row(
     has_ean: bool = False,
     has_decimal_hint: bool = False,
     side: str = "sell",
+    list_has_prices: bool = True,
 ) -> Confidence:
     """Score one extracted line.
 
@@ -146,6 +147,12 @@ def score_row(
         if side == "buy":
             # A buyer's list states what they want, not what they will pay. Normal.
             scored.fields["price"] = 1.0
+        elif not list_has_prices:
+            # An availability list -- '200+ pcs', ask for price -- states no price on
+            # any line. That is the list's format, said once about the list, not a
+            # problem on each of its rows for someone to fix one at a time.
+            scored.fields["price"] = 0.5
+            scored.list_reasons.append("the list states no prices")
         else:
             scored.fields["price"] = 0.5
             scored.reasons.append("a seller's row with no price")
