@@ -703,6 +703,17 @@ def _product_relation(requirement: Requirement, item: Supply) -> ProductRelation
     return "same" if left and left == right else None
 
 
+def related(requirement: Requirement, item: Supply) -> bool:
+    """Whether matching could ever pair these two, as an exact fill or a near miss.
+
+    Every option fill_requirement returns passes through _product_relation, so a lot
+    this says no to cannot appear among a requirement's options. That is what lets the
+    stored board (app/board_store.py) recompute only the requirements a changed lot can
+    touch, using the engine's own rule rather than a second guess at it.
+    """
+    return _product_relation(requirement, item) is not None
+
+
 def _spec_product(identity_key: str) -> str:
     """The brand and description part of a spec identity, without the lot qualifiers."""
     parts = identity_key.split("|")

@@ -99,11 +99,22 @@ match first became possible — the later of the requirement's and its newest lo
 `first_seen_at` — so a supplier resending yesterday's list does not make it new. Sellers and
 Buyers have the same client filter.
 
-Match alerts run in the browser while the dashboard is open: when a requirement turns
-fillable, a toast appears, the Matches tab shows a count, the row is tagged NEW, and — once
-the trader allows it — a desktop notification fires. Each requirement is announced once per
-person and browser; the first visit learns the existing board silently. Nothing is sent
-while every dashboard tab is closed; that would need the server to send email instead.
+The match board is stored, not computed per request (`board_matches`, migration 0017,
+`app/board_store.py`). After any successful write to the backend, a background thread reads
+the offers and counterparties changed since its last watermark and recomputes only the
+requirements they can touch — using the matching engine's own relation test
+(`matching.related`), plus every requirement whose stored options used a changed lot. A full
+rebuild runs at startup, every six hours, when model equivalences change, and on
+`POST /matches/rebuild`. `tests/test_board_store.py` holds incremental refreshes to the
+full-rebuild answer over random change histories. The dashboard reads the table straight from
+Postgres and falls back to the live `/matches/board` until the table exists and has been built.
+
+Match alerts: the backend stamps `first_matched_at` the first time a requirement can be
+filled, and never again. The dashboard listens for those stamps over realtime: a toast, a count
+on the Matches tab, NEW on the row, and — once allowed — a desktop notification. What a person
+has seen is tracked as a server timestamp per browser; a first visit starts from the newest
+match. Nothing is sent while every dashboard tab is closed, but the stamp is server-side, so
+email alerts can be built on it.
 
 The source-email drawer is the point of the whole screen. Every number on the board was read
 out of an email by software; the first time a price looks wrong the trader will want to see

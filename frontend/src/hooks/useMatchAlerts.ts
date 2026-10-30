@@ -1,9 +1,15 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 
-import { fetchMatchBoard, type MatchBoardRow } from "../lib/api";
+import type { MatchBoardRow } from "../lib/api";
+import {
+  fetchNewMatches,
+  latestMatchTime,
+  toBoardRow,
+  type StoredMatch,
+} from "../lib/boardMatches";
 import { supabase } from "../lib/supabase";
 
-/** One batch of requirements that turned fillable at the same check. */
+/** One batch of requirements that turned fillable together. */
 export interface MatchAlert {
   id: number;
   rows: MatchBoardRow[];
@@ -11,45 +17,29 @@ export interface MatchAlert {
 
 export type DesktopPermission = NotificationPermission | "unsupported";
 
-// A slow heartbeat. Realtime is the main trigger; this covers a dropped socket.
-const CHECK_EVERY_MS = 3 * 60_000;
-// An ingest writes a whole price list row by row. Waiting for it to settle turns
-// three hundred change events into one check, and one alert instead of a stutter.
-const SETTLE_MS = 8_000;
-// The watcher asks for the board's maximum, so a requirement does not look new merely
-// because it sorted into the window this time and out of it last time.
-const BOARD_LIMIT = 1000;
-
-interface Stored {
-  /** Fillable requirements this browser has already announced. */
-  seen: string[];
-  /** Announced but not yet looked at: the count on the Matches tab. */
-  unseen: string[];
-}
+// One email turns several requirements fillable within a second or two of each other;
+// gathering them makes one alert rather than a stutter of them.
+const GATHER_MS = 2_500;
 
 function storageKey(email: string) {
-  return `tvd.matchAlerts.v1:${email}`;
+  return `tvd.matchAlerts.v2:${email}`;
 }
 
 // Browser storage can be missing or throw (private windows, blocked site data). The
-// cost is only that the first check after a reload re-seeds silently instead of
-// alerting, so every access is wrapped and a failure is treated as "nothing stored".
-function load(email: string): Stored | null {
+// cost is only that a reload starts from "now" instead of from the last visit.
+function loadSince(email: string): string | null {
   try {
-    const raw = window.localStorage.getItem(storageKey(email));
-    if (!raw) return null;
-    const parsed = JSON.parse(raw) as Partial<Stored>;
-    return { seen: parsed.seen ?? [], unseen: parsed.unseen ?? [] };
+    return window.localStorage.getItem(storageKey(email));
   } catch {
     return null;
   }
 }
 
-function save(email: string, value: Stored) {
+function saveSince(email: string, since: string) {
   try {
-    window.localStorage.setItem(storageKey(email), JSON.stringify(value));
+    window.localStorage.setItem(storageKey(email), since);
   } catch {
-    // Alerts still work for this session; they just are not remembered.
+    // Alerts still work for this session.
   }
 }
 
@@ -57,23 +47,23 @@ function desktopPermission(): DesktopPermission {
   return typeof Notification === "undefined" ? "unsupported" : Notification.permission;
 }
 
-const fillable = (row: MatchBoardRow) => row.state === "filled" || row.state === "short";
+const later = (a: string, b: string) => (Date.parse(a) >= Date.parse(b) ? a : b);
 
 /**
  * Tells the trader when a buyer's requirement becomes fillable.
  *
- * "A match" here is a requirement going from nothing-can-fill-it to at least one real
- * option, the moment money becomes possible. It is announced once per requirement: a
- * second supplier for an order already announced, or a supplier resending the same
- * list, is not news. Near misses are never announced; they are not a fill.
+ * The backend stamps `first_matched_at` on a requirement the first time it can be
+ * filled, and never again — so a requirement is announced once, a second supplier for
+ * an order already announced is not news, and neither is a supplier resending the same
+ * list. This listens for those stamps as they are written (realtime on board_matches)
+ * and compares them with the newest one this person has already looked at.
  *
- * Per person and per browser, deliberately. The first check after signing in learns
- * what is already on the board without announcing it, so a new laptop does not open
- * on two hundred alerts for matches everyone has known about for a week.
+ * "Already looked at" is a server timestamp, not this laptop's clock, so a fast or
+ * slow clock cannot hide a match or repeat one. A first visit starts from the newest
+ * match on the board: nobody opens a new laptop to two hundred alerts.
  *
- * Runs only while the dashboard is open. With every tab closed nobody is told, which
- * is the limit of a browser alert — an email or WhatsApp alert would need the server
- * to do this instead.
+ * Runs only while the dashboard is open. The stamps are on the server, so email alerts
+ * for when it is closed can be built on the same column.
  */
 export function useMatchAlerts(
   email: string,
@@ -81,12 +71,8 @@ export function useMatchAlerts(
   // A row opens that requirement's options; null opens Matches, newest first.
   onOpen: (row: MatchBoardRow | null) => void,
 ) {
-  const initial = useRef(load(email));
-  // null until the first check has learned what is already on the board.
-  const seen = useRef<Set<string> | null>(
-    initial.current ? new Set(initial.current.seen) : null,
-  );
-  const [unseen, setUnseen] = useState<string[]>(initial.current?.unseen ?? []);
+  const since = useRef<string | null>(loadSince(email));
+  const [unseen, setUnseen] = useState<StoredMatch[]>([]);
   const unseenRef = useRef(unseen);
   unseenRef.current = unseen;
 
@@ -94,87 +80,94 @@ export function useMatchAlerts(
   // anything that arrives while they are looking at it.
   const [highlight, setHighlight] = useState<Set<string>>(new Set());
   const [alerts, setAlerts] = useState<MatchAlert[]>([]);
-  // Bumped whenever new matches are found, so an open Matches screen reloads.
-  const [version, setVersion] = useState(0);
   const [permission, setPermission] = useState<DesktopPermission>(desktopPermission);
+  // False until the stored board exists (migration 0017); alerts are quiet until then.
+  const [available, setAvailable] = useState(true);
 
   const watchingRef = useRef(watching);
   watchingRef.current = watching;
   const onOpenRef = useRef(onOpen);
   onOpenRef.current = onOpen;
-  const busy = useRef(false);
+  // Requirements already shown as a toast this session, so a reload of the unseen
+  // list after an event does not toast them again.
+  const toasted = useRef(new Set<string>());
   const nextAlert = useRef(1);
 
-  const persist = useCallback(
-    (nextUnseen: string[]) => {
-      if (seen.current) save(email, { seen: [...seen.current], unseen: nextUnseen });
+  const acknowledge = useCallback(
+    (rows: StoredMatch[]) => {
+      let mark = since.current;
+      for (const row of rows) {
+        if (row.first_matched_at) mark = mark ? later(mark, row.first_matched_at) : row.first_matched_at;
+      }
+      if (mark && mark !== since.current) {
+        since.current = mark;
+        saveSince(email, mark);
+      }
     },
     [email],
   );
 
   const check = useCallback(async () => {
-    if (busy.current) return;
-    busy.current = true;
     try {
-      const board = await fetchMatchBoard({ limit: BOARD_LIMIT });
-      const matched = board.rows.filter(fillable);
-
-      if (seen.current === null) {
-        seen.current = new Set(matched.map((r) => r.offer_id));
-        persist(unseenRef.current);
+      if (since.current === null) {
+        // A first visit: everything already on the board counts as seen.
+        const newest = await latestMatchTime();
+        since.current = newest ?? new Date().toISOString();
+        saveSince(email, since.current);
+        setAvailable(true);
         return;
       }
 
-      // Forget requirements that have left the board (sold, withdrawn), so the store
-      // does not grow forever. Only when the whole board came back — a capped answer
-      // would make a requirement look gone when it merely sorted past the cap.
-      if (board.rows.length < BOARD_LIMIT) {
-        const present = new Set(board.rows.map((r) => r.offer_id));
-        for (const id of [...seen.current]) if (!present.has(id)) seen.current.delete(id);
-      }
+      const rows = await fetchNewMatches(since.current);
+      setAvailable(true);
 
-      const fresh = matched
-        .filter((r) => !seen.current!.has(r.offer_id))
-        .sort((a, b) => (b.matched_at ?? "").localeCompare(a.matched_at ?? ""));
-      if (fresh.length === 0) {
-        persist(unseenRef.current);
-        return;
-      }
-
-      const ids = fresh.map((r) => r.offer_id);
-      for (const id of ids) seen.current.add(id);
-
-      let nextUnseen = unseenRef.current;
       if (watchingRef.current) {
-        setHighlight((prev) => new Set([...prev, ...ids]));
+        // On the Matches screen: tagged NEW where they sit, and seen.
+        if (rows.length) setHighlight((prev) => new Set([...prev, ...rows.map((r) => r.offer_id)]));
+        acknowledge(rows);
+        setUnseen([]);
       } else {
-        nextUnseen = [...new Set([...ids, ...unseenRef.current])];
-        setUnseen(nextUnseen);
+        setUnseen(rows);
       }
-      persist(nextUnseen);
 
-      setAlerts((prev) => [{ id: nextAlert.current++, rows: fresh }, ...prev].slice(0, 3));
-      setVersion((v) => v + 1);
-      notifyDesktop(fresh, (row) => onOpenRef.current(row));
+      const fresh = rows.filter((r) => !toasted.current.has(r.offer_id));
+      if (fresh.length === 0) return;
+      for (const row of fresh) toasted.current.add(row.offer_id);
+
+      const shown = fresh.map((r) => toBoardRow(r));
+      setAlerts((prev) => [{ id: nextAlert.current++, rows: shown }, ...prev].slice(0, 3));
+      notifyDesktop(shown, (row) => onOpenRef.current(row));
     } catch {
-      // A failed check is retried by the next trigger. Alerting on a guess is worse.
-    } finally {
-      busy.current = false;
+      // No stored board yet, or a dropped connection: the next event or focus retries.
+      setAvailable(false);
     }
-  }, [persist]);
+  }, [acknowledge, email]);
 
-  // Triggers: now, on a slow heartbeat, when the offers table changes, and when the
-  // trader comes back to a tab that has been in the background.
   useEffect(() => {
-    void check();
-    const heartbeat = window.setInterval(() => void check(), CHECK_EVERY_MS);
+    // Matches already unseen at sign-in show in the badge without a toast: they are
+    // old news to a toast, and the count says enough.
+    void (async () => {
+      if (since.current !== null) {
+        try {
+          const rows = await fetchNewMatches(since.current);
+          for (const row of rows) toasted.current.add(row.offer_id);
+        } catch {
+          // check() below reports it.
+        }
+      }
+      await check();
+    })();
 
-    let settle: number | undefined;
+    let gather: number | undefined;
     const channel = supabase
       .channel("match-alerts")
-      .on("postgres_changes", { event: "*", schema: "public", table: "offers" }, () => {
-        window.clearTimeout(settle);
-        settle = window.setTimeout(() => void check(), SETTLE_MS);
+      .on("postgres_changes", { event: "*", schema: "public", table: "board_matches" }, (event) => {
+        const row = event.new as Partial<StoredMatch> | undefined;
+        // Only a requirement that has just become fillable is worth a look.
+        if (!row?.first_matched_at || (row.state !== "filled" && row.state !== "short")) return;
+        if (since.current && Date.parse(row.first_matched_at) <= Date.parse(since.current)) return;
+        window.clearTimeout(gather);
+        gather = window.setTimeout(() => void check(), GATHER_MS);
       })
       .subscribe();
 
@@ -184,26 +177,26 @@ export function useMatchAlerts(
     document.addEventListener("visibilitychange", onVisible);
 
     return () => {
-      window.clearInterval(heartbeat);
-      window.clearTimeout(settle);
+      window.clearTimeout(gather);
       document.removeEventListener("visibilitychange", onVisible);
       void supabase.removeChannel(channel);
     };
   }, [check]);
 
-  // Opening Matches is looking at them: the badge clears and the rows carry NEW
-  // until the trader moves to another screen.
+  // Opening Matches is looking at them: the badge clears and the rows carry NEW until
+  // the trader moves to another screen.
   useEffect(() => {
     if (watching) {
-      if (unseenRef.current.length > 0) {
-        setHighlight((prev) => new Set([...prev, ...unseenRef.current]));
+      const rows = unseenRef.current;
+      if (rows.length > 0) {
+        setHighlight((prev) => new Set([...prev, ...rows.map((r) => r.offer_id)]));
+        acknowledge(rows);
         setUnseen([]);
-        persist([]);
       }
     } else {
       setHighlight(new Set());
     }
-  }, [watching, persist]);
+  }, [watching, acknowledge]);
 
   const dismiss = useCallback((id: number) => {
     setAlerts((prev) => prev.filter((a) => a.id !== id));
@@ -223,13 +216,13 @@ export function useMatchAlerts(
     highlight,
     alerts,
     dismiss,
-    version,
     permission,
     enableDesktop,
+    available,
   };
 }
 
-/** One system notification per check, however many matched, so a big list is one ping. */
+/** One system notification per batch, however many matched, so a big list is one ping. */
 function notifyDesktop(rows: MatchBoardRow[], open: (row: MatchBoardRow | null) => void) {
   if (typeof Notification === "undefined" || Notification.permission !== "granted") return;
 

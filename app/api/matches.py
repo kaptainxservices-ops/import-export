@@ -229,59 +229,15 @@ def board(
             if not real and not near:
                 continue
 
-        best = real[0] if real else None
-        if best is not None and best.total_margin:
-            opportunity += best.total_margin
-            currency = currency or offer.currency
-
-        if best is None:
-            state = "near_miss" if near else "no_supply"
-            unmet += 1
-        elif best.shortfall:
-            state = "short"
+        row = build_row(offer, real, near, names, first_seen)
+        rows.append(row)
+        if row.state in ("filled", "short"):
             filled += 1
+            if row.total_margin:
+                opportunity += row.total_margin
+                currency = currency or offer.currency
         else:
-            state = "filled"
-            filled += 1
-
-        spec_parts = [
-            p for p in (
-                f"{offer.capacity_gb}GB" if offer.capacity_gb else None,
-                offer.colour,
-                f"Grade {offer.grade}" if offer.grade else None,
-                f"{offer.region_code} spec" if offer.region_code else None,
-            ) if p
-        ]
-        rows.append(
-            BoardRowOut(
-                offer_id=offer.id,
-                description=offer.description,
-                spec=" · ".join(spec_parts),
-                spec_parts=spec_parts,
-                best_legs=_legs(best, names),
-                best_currency=(best.allocations[0].currency if best and best.allocations
-                               else None),
-                buyer_id=offer.counterparty_id,
-                supplier_ids=_supplier_ids(best),
-                matched_at=_matched_at(offer, best, first_seen),
-                counterparty_name=offer.counterparty_name,
-                country=offer.country,
-                quantity=offer.quantity,
-                unit_price=offer.unit_price,
-                currency=offer.currency,
-                last_confirmed_at=offer.last_confirmed_at,
-                state=state,
-                option_count=len(real),
-                near_miss_count=len(near),
-                best_summary=_summarise(best, names) if best else None,
-                blended_unit_cost=best.blended_unit_cost if best else None,
-                total_margin=best.total_margin if best else None,
-                margin_pct=best.margin_pct if best else None,
-                shortfall=best.shortfall if best else 0,
-                filled_quantity=best.filled_quantity if best else 0,
-                note=_note(best, near),
-            )
-        )
+            unmet += 1
 
     # Ranked by whether it can be filled first, and only then by money.
     #
@@ -301,6 +257,63 @@ def board(
         opportunity=round(opportunity, 2),
         currency=currency,
         supply_rows=len(supply),
+    )
+
+
+def build_row(
+    offer: BoardOffer,
+    real: list[MatchOption],
+    near: list[MatchOption],
+    names: dict[str, str | None],
+    first_seen: dict[str, str | None],
+) -> BoardRowOut:
+    """One requirement's line on the board, from its options, best first.
+
+    Shared by the live endpoint and the stored board (app/board_store.py), so the two
+    cannot drift: a row means the same thing whichever of them computed it.
+    """
+    best = real[0] if real else None
+    if best is None:
+        state = "near_miss" if near else "no_supply"
+    elif best.shortfall:
+        state = "short"
+    else:
+        state = "filled"
+
+    spec_parts = [
+        p for p in (
+            f"{offer.capacity_gb}GB" if offer.capacity_gb else None,
+            offer.colour,
+            f"Grade {offer.grade}" if offer.grade else None,
+            f"{offer.region_code} spec" if offer.region_code else None,
+        ) if p
+    ]
+    return BoardRowOut(
+        offer_id=offer.id,
+        description=offer.description,
+        spec=" · ".join(spec_parts),
+        spec_parts=spec_parts,
+        best_legs=_legs(best, names),
+        best_currency=(best.allocations[0].currency if best and best.allocations else None),
+        buyer_id=offer.counterparty_id,
+        supplier_ids=_supplier_ids(best),
+        matched_at=_matched_at(offer, best, first_seen),
+        counterparty_name=offer.counterparty_name,
+        country=offer.country,
+        quantity=offer.quantity,
+        unit_price=offer.unit_price,
+        currency=offer.currency,
+        last_confirmed_at=offer.last_confirmed_at,
+        state=state,
+        option_count=len(real),
+        near_miss_count=len(near),
+        best_summary=_summarise(best, names) if best else None,
+        blended_unit_cost=best.blended_unit_cost if best else None,
+        total_margin=best.total_margin if best else None,
+        margin_pct=best.margin_pct if best else None,
+        shortfall=best.shortfall if best else 0,
+        filled_quantity=best.filled_quantity if best else 0,
+        note=_note(best, near),
     )
 
 
@@ -411,6 +424,33 @@ def _note(best: MatchOption | None, near: list[MatchOption]) -> str | None:
         parts.append("buyer stated no price")
     parts.extend(best.relaxed[:1])
     return "; ".join(parts) or None
+
+
+class RebuildOut(BaseModel):
+    examined: int
+    recomputed: int
+    written: int
+    deleted: int
+
+
+@router.post("/rebuild", response_model=RebuildOut, summary="Recompute the stored board")
+def rebuild(context=Depends(current_tenant)) -> RebuildOut:
+    """Recompute every stored match for the caller's tenant, now.
+
+    The stored board keeps itself current; this is the manual override — after running
+    migration 0017 for the first time, or whenever the board looks wrong and waiting for
+    the next scheduled rebuild is not an answer.
+    """
+    from app.board_store import SupabaseBoardDB, refresh
+
+    tenant_id, repository = context
+    if not hasattr(repository, "client"):
+        raise HTTPException(status.HTTP_501_NOT_IMPLEMENTED, "no stored board on this backend")
+    result = refresh(SupabaseBoardDB(repository), tenant_id, full=True)
+    return RebuildOut(
+        examined=result.examined, recomputed=result.recomputed,
+        written=result.written, deleted=result.deleted,
+    )
 
 
 @router.get("/fill", response_model=MatchesOut, summary="Ways to fill a buyer requirement")

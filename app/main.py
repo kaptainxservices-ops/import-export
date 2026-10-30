@@ -4,10 +4,10 @@ import logging
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 
-from app import __version__
+from app import __version__, board_refresher
 from app.api import deals, health, ingest, matches, review, suppliers
 from app.config import get_settings
 from app.logging_config import configure_logging
@@ -49,9 +49,34 @@ async def lifespan(_: FastAPI) -> AsyncIterator[None]:
     if settings.is_production and not settings.supabase_url:
         log.warning("SUPABASE_URL is not set in production")
 
+    refresher = _start_board_refresher(settings)
+
     yield
 
+    if refresher is not None:
+        refresher.stop()
+        board_refresher.set_refresher(None)
     log.info("import-export backend shutting down")
+
+
+def _start_board_refresher(settings):
+    """The stored match board's background worker. Not started without Supabase: tests
+    and local runs on the in-memory store have no board table to keep."""
+    if not settings.board_refresh_enabled or not settings.supabase_url:
+        log.info("board refresher off (enabled=%s, supabase=%s)",
+                 settings.board_refresh_enabled, bool(settings.supabase_url))
+        return None
+
+    from app.board_store import SupabaseBoardDB
+    from app.dependencies import get_repository
+
+    refresher = board_refresher.BoardRefresher(
+        lambda: SupabaseBoardDB(get_repository()),
+        full_every_hours=settings.board_full_rebuild_hours,
+    )
+    board_refresher.set_refresher(refresher)
+    refresher.start()
+    return refresher
 
 
 app = FastAPI(
@@ -67,6 +92,21 @@ app.include_router(matches.router)
 app.include_router(deals.router)
 app.include_router(review.router)
 app.include_router(suppliers.router)
+
+
+@app.middleware("http")
+async def refresh_board_after_writes(request: Request, call_next):
+    """Any request that may have written an offer asks the stored board to catch up.
+
+    Deliberately broad — every successful POST, PATCH, PUT and DELETE — rather than a
+    call in each endpoint that writes: the refresh reads what actually changed, so a
+    request that changed nothing costs one small query, while an endpoint added later
+    without the call would leave the board quietly stale.
+    """
+    response = await call_next(request)
+    if request.method in {"POST", "PATCH", "PUT", "DELETE"} and response.status_code < 400:
+        board_refresher.request_refresh()
+    return response
 
 # The dashboard runs on a different origin — localhost in development, Vercel in
 # production — so the browser will not call this without CORS. Restricted to the

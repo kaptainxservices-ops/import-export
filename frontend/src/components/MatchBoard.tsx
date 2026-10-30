@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 import { useFacets, type ClientOption } from "../hooks/useOffers";
 import {
@@ -8,6 +8,8 @@ import {
   type MatchSort,
 } from "../lib/api";
 import { bigMoney, money } from "../lib/money";
+import { fetchStoredBoard, NoStoredBoard } from "../lib/boardMatches";
+import { supabase } from "../lib/supabase";
 import { relativeAge } from "../lib/types";
 
 interface Props {
@@ -19,7 +21,7 @@ interface Props {
   onSortChange: (sort: MatchSort) => void;
   /** Requirements that turned fillable since this person last looked: tagged NEW. */
   fresh: Set<string>;
-  /** Bumped by the match watcher when the board has changed underneath this screen. */
+  /** Bumped when something outside this screen should make it reload. */
   refreshKey: number;
 }
 
@@ -72,21 +74,60 @@ export function MatchBoard({
   // nobody has asked for would be a filter that can only ever return nothing.
   const { brands, categories } = useFacets("buy");
 
+  // The stored board changes when the backend finishes recomputing after a list lands.
+  // One email rewrites many rows, so the events are gathered into one reload.
+  const [changes, setChanges] = useState(0);
+  useEffect(() => {
+    let settle: number | undefined;
+    const bump = () => {
+      window.clearTimeout(settle);
+      settle = window.setTimeout(() => setChanges((n) => n + 1), 1000);
+    };
+    const channel = supabase
+      .channel("board-matches")
+      .on("postgres_changes", { event: "*", schema: "public", table: "board_matches" }, bump)
+      .on("postgres_changes", { event: "*", schema: "public", table: "board_match_state" }, bump)
+      .subscribe();
+    return () => {
+      window.clearTimeout(settle);
+      void supabase.removeChannel(channel);
+    };
+  }, []);
+
+  // Set once the stored board is found missing, so the fallback is not retried on every
+  // keystroke. Cleared by a reload of the page.
+  const live = useRef(false);
+
   useEffect(() => {
     let cancelled = false;
     setLoading(true);
     setError(null);
 
+    const filters = {
+      brand,
+      category,
+      q: query,
+      buyer: clientKind === "buyer" ? clientId : undefined,
+      supplier: clientKind === "supplier" ? clientId : undefined,
+      sort,
+    };
+
     void (async () => {
       try {
-        const next = await fetchMatchBoard({
-          brand,
-          category,
-          q: query,
-          buyer: clientKind === "buyer" ? clientId : undefined,
-          supplier: clientKind === "supplier" ? clientId : undefined,
-          sort,
-        });
+        let next: Board;
+        if (live.current) {
+          next = await fetchMatchBoard(filters);
+        } else {
+          try {
+            next = await fetchStoredBoard(filters);
+          } catch (problem) {
+            // Until migration 0017 is run and the backend has built the board once,
+            // work it out live as before rather than show nothing.
+            if (!(problem instanceof NoStoredBoard)) throw problem;
+            live.current = true;
+            next = await fetchMatchBoard(filters);
+          }
+        }
         if (!cancelled) setBoard(next);
       } catch (problem) {
         if (!cancelled) {
@@ -100,7 +141,7 @@ export function MatchBoard({
     return () => {
       cancelled = true;
     };
-  }, [brand, category, query, clientKind, clientId, sort, refreshKey]);
+  }, [brand, category, query, clientKind, clientId, sort, refreshKey, changes]);
 
   const narrowed = Boolean(brand || category || client || query);
 

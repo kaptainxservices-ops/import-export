@@ -55,6 +55,11 @@ class Settings(BaseSettings):
     # Vercel read this client's board with the viewer's own session.
     dashboard_origin_regex: str = ""
 
+    # The stored match board (app/board_store.py). Off only for debugging: with it off,
+    # the dashboard falls back to computing the board on every request.
+    board_refresh_enabled: bool = True
+    board_full_rebuild_hours: float = 6.0
+
     # Monitoring
     sentry_dsn: str = ""
 

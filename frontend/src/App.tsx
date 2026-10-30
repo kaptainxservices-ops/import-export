@@ -192,7 +192,7 @@ function Board({ email }: { email: string }) {
             sort={matchSort}
             onSortChange={setMatchSort}
             fresh={matchAlerts.highlight}
-            refreshKey={matchAlerts.version + resolved}
+            refreshKey={resolved}
           />
         ) : tab === "deals" ? (
           <Deals />
