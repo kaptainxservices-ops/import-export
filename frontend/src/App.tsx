@@ -2,24 +2,16 @@ import { useEffect, useState } from "react";
 import type { Session } from "@supabase/supabase-js";
 
 import { Deals } from "./components/Deals";
-import { Filters } from "./components/Filters";
 import { Login } from "./components/Login";
 import { MatchBoard } from "./components/MatchBoard";
 import { MatchDrawer, type MatchSubject } from "./components/MatchDrawer";
 import { MatchToasts } from "./components/MatchToasts";
-import { OfferTable } from "./components/OfferTable";
+import { OfferBoard } from "./components/OfferBoard";
 import { ReviewQueue } from "./components/ReviewQueue";
 import { SourceDrawer } from "./components/SourceDrawer";
 import { Suppliers } from "./components/Suppliers";
 import { useMatchAlerts } from "./hooks/useMatchAlerts";
-import {
-  emptyFilters,
-  useClients,
-  useFacets,
-  useOffers,
-  useSupplierNames,
-  type OfferFilters,
-} from "./hooks/useOffers";
+import { useClients, useSupplierNames } from "./hooks/useOffers";
 import { fetchReviewQueue, type MatchBoardRow, type MatchSort } from "./lib/api";
 import { supabase } from "./lib/supabase";
 import type { Offer, Side } from "./lib/types";
@@ -51,16 +43,23 @@ type Tab = Side | "matches" | "deals" | "review" | "suppliers";
 
 function Board({ email }: { email: string }) {
   const [tab, setTab] = useState<Tab>("matches");
-  const [filters, setFilters] = useState<OfferFilters>(emptyFilters);
   const [selected, setSelected] = useState<Offer | null>(null);
   const [matching, setMatching] = useState<MatchSubject | null>(null);
   // Bumped when a review is resolved, to pull the board again. Resolving an email is
   // the one action in this app that adds rows, so it is the one that has to invalidate.
   const [resolved, setResolved] = useState(0);
 
-  const side: Side = tab === "sell" || tab === "buy" ? tab : "sell";
-  const { offers, loading, error, total } = useOffers(side, filters, resolved);
-  const { brands, categories } = useFacets(side);
+  // Sellers and Buyers are mounted the first time they are opened and kept from then
+  // on. Never opened, never loaded: a trader who only works Matches pays nothing for
+  // the other two.
+  const [opened, setOpened] = useState<Set<Side>>(new Set());
+  useEffect(() => {
+    if ((tab === "sell" || tab === "buy") && !opened.has(tab)) {
+      setOpened((prev) => new Set(prev).add(tab));
+    }
+  }, [tab, opened]);
+  // A lot to show on one side, from a match drawer's "show this lot".
+  const [pin, setPin] = useState<{ side: Side; offerId: string; n: number } | null>(null);
   const supplierNames = useSupplierNames();
   const buyers = useClients("buy");
   const sellers = useClients("sell");
@@ -95,11 +94,10 @@ function Board({ email }: { email: string }) {
       .catch(() => setWaiting(0));
   }, [resolved]);
 
-  // Filters are per-side: the brands a supplier sells are not the brands a buyer wants,
-  // and carrying a stale brand filter across the switch shows an empty board.
+  // Each side keeps its own filters (see OfferBoard), so switching no longer resets
+  // them: the brands a supplier sells never leak into the buyers' view either way.
   function switchTab(next: Tab) {
     setTab(next);
-    if (next === "sell" || next === "buy") setFilters(emptyFilters);
   }
 
   return (
@@ -200,50 +198,31 @@ function Board({ email }: { email: string }) {
           />
         </div>
 
-        {tab === "matches" ? null : tab === "deals" ? (
+        {(["sell", "buy"] as Side[]).map(
+          (side) =>
+            opened.has(side) && (
+              <div key={side} hidden={tab !== side}>
+                <OfferBoard
+                  side={side}
+                  active={tab === side}
+                  clients={side === "sell" ? sellers : buyers}
+                  supplierNames={supplierNames}
+                  refreshKey={resolved}
+                  pin={pin && pin.side === side ? pin : null}
+                  onSelect={setSelected}
+                  onMatch={setMatching}
+                />
+              </div>
+            ),
+        )}
+
+        {tab === "deals" ? (
           <Deals />
         ) : tab === "review" ? (
           <ReviewQueue onResolved={() => setResolved((n) => n + 1)} />
         ) : tab === "suppliers" ? (
           <Suppliers />
-        ) : (
-          <>
-            <Filters
-              filters={filters}
-              brands={brands}
-              categories={categories}
-              clients={side === "sell" ? sellers : buyers}
-              clientLabel={side === "sell" ? "sellers" : "buyers"}
-              onChange={setFilters}
-              total={total}
-              showing={offers.length}
-            />
-
-            {error && <p className="error">{error}</p>}
-            {loading ? (
-              <p className="muted">Loading offers…</p>
-            ) : filters.offerId && offers.length === 0 ? (
-              // Distinct from "nothing matches those filters", which is what an empty
-              // search looks like. Arriving here from a match means one exact row was
-              // asked for by id and was not there, and saying so is what makes the
-              // difference between a stale board and a broken link visible.
-              <p className="empty">
-                That lot is not on this board — it may have been sold or withdrawn since
-                the match was worked out.{" "}
-                <button className="link" onClick={() => setFilters(emptyFilters)}>
-                  Show the whole board
-                </button>
-              </p>
-            ) : (
-              <OfferTable
-                offers={offers}
-                onSelect={setSelected}
-                onMatch={setMatching}
-                supplierName={(id) => supplierNames[id] ?? null}
-              />
-            )}
-          </>
-        )}
+        ) : null}
       </main>
 
       <MatchToasts
@@ -261,7 +240,7 @@ function Board({ email }: { email: string }) {
           onShowOffer={(offerId, side) => {
             setMatching(null);
             setTab(side);
-            setFilters({ ...emptyFilters, offerId });
+            setPin((prev) => ({ side, offerId, n: (prev?.n ?? 0) + 1 }));
           }}
         />
       )}

@@ -36,7 +36,7 @@ export const emptyFilters: OfferFilters = {
  * rather than a surgical patch of one row. At this volume the refetch is cheap, and a
  * board that quietly diverges from the database is worse than one that reloads.
  */
-export function useOffers(side: Side, filters: OfferFilters, refreshKey = 0) {
+export function useOffers(side: Side, filters: OfferFilters, refreshKey = 0, active = true) {
   const [offers, setOffers] = useState<Offer[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -99,26 +99,57 @@ export function useOffers(side: Side, filters: OfferFilters, refreshKey = 0) {
     setLoading(false);
   }, [side]);
 
+  // A screen kept mounted behind another tab does no work while hidden. A change only
+  // marks it stale, and it reloads once when it is shown again — so two boards kept
+  // alive cost what one costs, and a busy morning does not run queries for a table
+  // nobody is looking at.
+  const activeRef = useRef(active);
+  activeRef.current = active;
+  const stale = useRef(false);
+
+  const loadWhenSeen = useCallback(() => {
+    if (activeRef.current) void load();
+    else stale.current = true;
+  }, [load]);
+
   // `refreshKey` covers the case realtime does not: resolving a review inserts rows
   // through the backend, and if realtime is off or the socket has dropped, the board
   // would otherwise sit there looking exactly as empty as before the click.
+  const firstLoad = useRef(true);
   useEffect(() => {
-    setLoading(true);
-    void load();
+    if (firstLoad.current || activeRef.current) {
+      firstLoad.current = false;
+      setLoading(true);
+      void load();
+    } else {
+      stale.current = true;
+    }
   }, [load, filters, refreshKey]);
 
   useEffect(() => {
+    if (active && stale.current) {
+      stale.current = false;
+      void load();
+    }
+  }, [active, load]);
+
+  useEffect(() => {
+    // One email writes hundreds of rows, and each is an event. Reloading on every one
+    // ran hundreds of queries for one list; gathered, it is one.
+    let settle: number | undefined;
     const channel = supabase
       .channel(`offers-${side}`)
       .on("postgres_changes", { event: "*", schema: "public", table: "offers" }, () => {
-        void load();
+        window.clearTimeout(settle);
+        settle = window.setTimeout(loadWhenSeen, 1500);
       })
       .subscribe();
 
     return () => {
+      window.clearTimeout(settle);
       void supabase.removeChannel(channel);
     };
-  }, [load, side]);
+  }, [loadWhenSeen, side]);
 
   return { offers, loading, error, total, reload: load };
 }
