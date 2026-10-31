@@ -60,6 +60,11 @@ class Settings(BaseSettings):
     board_refresh_enabled: bool = True
     board_full_rebuild_hours: float = 6.0
 
+    # The model's second opinion before a list closes stock the rules are unsure about
+    # (app/brain/list_decision.py). Off, the rules alone decide; the model is never asked
+    # anyway when no model key is set.
+    list_checker_enabled: bool = True
+
     # Monitoring
     sentry_dsn: str = ""
 

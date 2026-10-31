@@ -27,7 +27,16 @@ from app.brain.companies import find_unique, matches
 from app.brain.completeness import detect_list_completeness
 from app.brain.confidence import score_row
 from app.brain.fingerprint import describe_difference, list_fingerprint
+from app.brain.list_decision import (
+    ListDecision,
+    keeps_row,
+    lateness,
+    read_wording,
+    settle,
+)
 from app.brain.llm import UsageLog, classify_side_llm, mapper_for
+from app.brain.llm.client import available as model_available
+from app.brain.llm.listcheck import check_whole_list
 from app.brain.normalise import (
     ProductSpec,
     detect_declared_currency,
@@ -48,6 +57,7 @@ from app.brain.sender import placeholder_address, plausible_company, resolve_sen
 from app.brain.summary import drop_summary_rows
 from app.brain.tables import ColumnMapper, parse_grid, read_html_tables, read_spreadsheet
 from app.brain.tables.parser import TableRow
+from app.config import get_settings
 from app.db.models import EmailRecord, ImportRecord, UsageEvent
 from app.db.repository import Repository
 from app.schemas.email import Attachment, InboundEmail
@@ -519,6 +529,35 @@ def _extract_and_reconcile(
     ]
 
     existing = repo.load_live_offers(tenant_id, counterparty.id, side)
+    zone = getattr(tenant, "timezone", "Europe/Amsterdam")
+
+    # ---------------------------------------------------------------- a late email?
+    #
+    # Lists from this sender that reached the board, from a day and a half before this
+    # email onwards -- which includes every list that arrived AFTER it. Read once, and
+    # used twice: here, and for the same-day rule below.
+    arriving = _aware(payload.received_at)
+    listed = repo.lists_since(tenant_id, counterparty.id, side, arriving - timedelta(hours=36))
+    habits = _habits(incoming)
+    late = lateness(listed, arriving, habits, zone)
+    late_notes: list[str] = []
+    if late.superseded:
+        kept = [
+            item for item in incoming
+            if keeps_row(item.fields.get("category"), habits, late.superseded)
+        ]
+        dropped = len(incoming) - len(kept)
+        if not kept:
+            return _superseded(
+                payload, tenant_id, counterparty, side, email_id, repo,
+                incoming=incoming, late=late, flagged=flagged,
+                parse_warnings=parse_warnings, expanded=expanded, unmapped=unmapped,
+            )
+        incoming = kept
+        late_notes.append(
+            f"{dropped} lines left out: a whole list from this sender on a later day "
+            f"already covered {_names(late.superseded)}"
+        )
 
     # ---------------------------------------------------------------- a second list?
     #
@@ -531,7 +570,6 @@ def _extract_and_reconcile(
     # held list is never reconciled at all — no actions are computed, so nothing can
     # reach the board by an oversight downstream.
     fingerprint = list_fingerprint(incoming)
-    zone = getattr(tenant, "timezone", "Europe/Amsterdam")
     prior = repo.last_applied_import(tenant_id, counterparty.id, side)
     verdict = decide(
         arriving_at=payload.received_at,
@@ -555,9 +593,7 @@ def _extract_and_reconcile(
     # destructive action is a closure, and none happens in a category already
     # confirmed today. Whatever sold since the morning closes with tomorrow's first list.
     covered = {item.fields.get("category") for item in incoming}
-    confirmed_today = _confirmed_today(
-        repo, tenant_id, counterparty.id, side, payload, zone, covered
-    )
+    confirmed_today = _confirmed_today(listed, arriving, zone, covered)
     if verdict.verdict == "hold" and not HOLD_SECOND_LISTS:
         verdict = replace(verdict, verdict="apply")
     scope = list_scope(existing, covered, confirmed_today)
@@ -566,8 +602,17 @@ def _extract_and_reconcile(
     # Judged against what this sender has live in the same categories, not against the
     # size of their last email: a 33-line Tablets list is not "a collapse" from a
     # 122-line Phones list.
+    #
+    # Except for a list with no categories at all: its scope is only this sender's other
+    # uncategorised lines, often one or two, and a one-line 'WTB' from a buyer with forty
+    # requirements open then looks like their whole list and closes the other one. What
+    # tells an order from a list there is everything the sender has open.
+    if any(c is not None for c in covered):
+        usual = len(in_scope)
+    else:
+        usual = sum(1 for o in existing if o.status == "live")
     is_complete, why = detect_list_completeness(
-        payload.subject, payload.body_text, len(incoming), len(in_scope) or None
+        payload.subject, payload.body_text, len(incoming), usual or None
     )
     previous = len(in_scope) or None
 
@@ -580,15 +625,29 @@ def _extract_and_reconcile(
             expanded=expanded, unmapped=unmapped,
         )
 
+    # ---------------------------------------------------------------- the decision
+    #
+    # Replace, add, or add new lines only -- see app/brain/list_decision.py. The rules
+    # decide; the model is asked only when they lean towards closing stock and are not
+    # sure, and it can only ever stop a closure.
+    already = sorted(str(c or "uncategorised") for c in covered & confirmed_today)
+    calls_before_check = len(usage.calls)
+    decision = _decide_list(
+        payload, existing, incoming, scope, previous, is_complete, why,
+        late=late, already=already, usage=usage,
+    )
+    _record_usage(repo, tenant_id, email_id, usage, since=calls_before_check)
+
     result = reconcile(
         existing,
         incoming,
         previous_row_count=previous,
-        is_complete_list=is_complete,
+        is_complete_list=decision.is_complete,
         close_scope=scope,
+        update_existing=decision.action != "add_new_only",
     )
+    result.notes[0:0] = late_notes
     result.notes.append(f"completeness: {why}")
-    already = sorted(str(c or "uncategorised") for c in covered & confirmed_today)
     if already:
         result.notes.append(
             f"another list today already confirmed {', '.join(already)}: added and "
@@ -609,9 +668,9 @@ def _extract_and_reconcile(
 
     repo.record_import(
         ImportRecord(
-            categories=sorted(
-                habitual_categories([item.fields.get("category") for item in incoming])
-            ),
+            # [''] for a list with no categories at all, so a later list can tell "it
+            # covered the uncategorised lines" from "it predates categories" (None).
+            categories=sorted(c or "" for c in habits),
             tenant_id=tenant_id,
             counterparty_id=counterparty.id,
             email_id=email_id,
@@ -627,7 +686,7 @@ def _extract_and_reconcile(
             duplicate_rows=result.duplicate_rows,
             flagged_rows=flagged,
             parse_warnings=parse_warnings,
-            notes="; ".join(result.notes),
+            notes=decision.note + " " + "; ".join(result.notes),
             side=side,
             # Written on every applied import, because it is what the NEXT list from
             # this counterparty is compared against. An import without one forces the
@@ -652,9 +711,10 @@ def _extract_and_reconcile(
     _record_usage(repo, tenant_id, email_id, usage, since=calls_before)
 
     log.info(
-        "processed tenant=%s message_id=%s side=%s rows=%d "
+        "processed tenant=%s message_id=%s side=%s rows=%d decision=%s by=%s "
         "inserted=%d updated=%d refreshed=%d closed=%d status=%s",
         tenant_id, payload.message_id, side, result.row_count,
+        decision.action, decision.decided_by,
         result.inserted, result.updated, result.refreshed, result.closed, result.status,
     )
 
@@ -668,7 +728,7 @@ def _extract_and_reconcile(
         expanded_rows=expanded,
         tables_needing_mapping=unmapped,
         reconcile=result,
-        notes=result.notes,
+        notes=[decision.note, *result.notes],
         model_calls=len(usage),
         model_cost_usd=usage.cost_usd,
     )
@@ -914,9 +974,7 @@ def _not_applied(
     )
 
 
-def _confirmed_today(
-    repo, tenant_id, counterparty_id, side, payload, zone, covered
-) -> set[str | None]:
+def _confirmed_today(listed, arriving, zone, covered) -> set[str | None]:
     """Categories a whole list from this sender already covered today.
 
     By the email's clock on both sides, so a list processed late or reprocessed is
@@ -926,24 +984,147 @@ def _confirmed_today(
     A list from before migration 0018 cannot say what it covered; it is read as having
     covered everything, which only ever means closing less.
     """
-    arriving = payload.received_at
-    if arriving.tzinfo is None:
-        arriving = arriving.replace(tzinfo=timezone.utc)  # noqa: UP017
     today = local_day(arriving, zone)
     found: set[str | None] = set()
-    for listed in repo.lists_since(
-        tenant_id, counterparty_id, side, arriving - timedelta(hours=36)
-    ):
-        if listed.is_complete_list is not True or local_day(listed.received_at, zone) != today:
+    for item in listed:
+        if item.is_complete_list is not True or local_day(item.received_at, zone) != today:
             continue
         # Earlier or later the same day: a list already on the board speaks for its
-        # categories today whichever order the two were processed in. n8n catching up
-        # after an outage delivers them out of order, and the later email must not be
-        # undone by an earlier one processed after it.
-        if listed.categories is None:
+        # categories today whichever order the two were processed in.
+        if item.categories is None:
             return set(covered)
-        found |= {c or None for c in listed.categories}
+        found |= {c or None for c in item.categories}
     return found
+
+
+def _aware(moment):
+    return moment if moment.tzinfo else moment.replace(tzinfo=timezone.utc)  # noqa: UP017
+
+
+def _habits(incoming: list[IncomingOffer]) -> set[str | None]:
+    """The categories a list is about; {None} for a sender who never categorises."""
+    found = habitual_categories([item.fields.get("category") for item in incoming])
+    return set(found) or {None}
+
+
+def _names(categories) -> str:
+    return ", ".join(sorted(str(c or "uncategorised") for c in categories))
+
+
+def _decide_list(
+    payload: InboundEmail,
+    existing,
+    incoming: list[IncomingOffer],
+    scope: set[str],
+    previous: int | None,
+    is_complete: bool | None,
+    why: str,
+    *,
+    late,
+    already: list[str],
+    usage: UsageLog,
+) -> ListDecision:
+    """Replace, add, or add new lines only, and why. See app/brain/list_decision.py."""
+    if late.behind:
+        return ListDecision(
+            "add_new_only", False,
+            ("a newer list from this sender reached the board before this email; only "
+             "lines the board has never had are added",),
+        )
+
+    # A dry run: how many lines would a replace close? Nothing is written by reconcile.
+    dry = reconcile(
+        existing, incoming,
+        previous_row_count=previous, is_complete_list=is_complete, close_scope=scope,
+    )
+    if is_complete is True and already and dry.closed == 0:
+        return ListDecision(
+            "add", True,
+            (why, f"another whole list today already covered {', '.join(already)}; "
+                  f"closes nothing there"),
+        )
+
+    check = None
+    if get_settings().list_checker_enabled and model_available():
+        def check(would_close: int):
+            reading = check_whole_list(
+                payload.subject, payload.body_text,
+                row_count=len(incoming), usual_rows=len(scope) or None,
+                would_close=would_close,
+            )
+            if reading is None:
+                return None
+            usage.add("check", reading.answer)
+            return reading.reading
+
+    return settle(
+        rule_complete=is_complete,
+        rule_why=why,
+        wording=read_wording(payload.subject, payload.body_text),
+        would_close=dry.closed,
+        live_in_scope=len(scope),
+        check=check,
+    )
+
+
+def _superseded(
+    payload: InboundEmail,
+    tenant_id: str,
+    counterparty,
+    side: str,
+    email_id: str | None,
+    repo: Repository,
+    *,
+    incoming: list[IncomingOffer],
+    late,
+    flagged: int,
+    parse_warnings: list[str],
+    expanded: int,
+    unmapped: int,
+) -> PipelineResult:
+    """An email whose every line a newer whole list from the same sender already covered.
+
+    Applied to nothing: everything it says is older than what the board holds. Recorded
+    so the import log shows it arrived, and kept out of Review -- there is nothing for a
+    person to decide.
+    """
+    note = ListDecision(
+        "reject", None,
+        (f"a whole list from this sender on a later day already covered "
+         f"{_names(late.superseded)}; everything in it is older than the board",),
+    ).note
+    repo.record_import(
+        ImportRecord(
+            tenant_id=tenant_id,
+            counterparty_id=counterparty.id,
+            email_id=email_id,
+            row_count=len(incoming),
+            previous_row_count=None,
+            is_complete_list=None,
+            status="superseded",
+            flagged_rows=flagged,
+            parse_warnings=parse_warnings,
+            rows_expanded_from_variants=expanded,
+            notes=note,
+            side=side,
+            source_received_at=payload.received_at,
+        )
+    )
+    log.info(
+        "superseded tenant=%s message_id=%s side=%s rows=%d (%s)",
+        tenant_id, payload.message_id, side, len(incoming), note,
+    )
+    return PipelineResult(
+        "superseded",
+        payload.message_id,
+        email_id=email_id,
+        counterparty_id=counterparty.id,
+        side=side,
+        row_count=len(incoming),
+        expanded_rows=expanded,
+        tables_needing_mapping=unmapped,
+        notes=[note],
+    )
 
 
 def _held_row(row: IncomingOffer, live) -> dict:

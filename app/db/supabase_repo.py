@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import logging
 import re
+from dataclasses import replace
 from datetime import datetime, timezone
 from typing import Any
 
@@ -437,6 +438,14 @@ class SupabaseRepository:
         try:
             return self._insert_import(record)
         except Exception as error:  # noqa: BLE001
+            if record.status == "superseded" and "import_status" in str(error):
+                # Migration 0019 not run yet. Recorded as a resend instead: also applied
+                # to nothing and also kept out of Review, which is what matters.
+                log.warning(
+                    "import status 'superseded' does not exist yet -- run supabase/"
+                    "migrations/0019_import_status_superseded.sql"
+                )
+                return self.record_import(replace(record, status="same_as_applied"))
             if "categories" not in str(error) or not self._has_import_categories:
                 raise
             self._missing_import_categories()
@@ -772,6 +781,29 @@ class SupabaseRepository:
         "counterparty_id,email_id,counterparties(name,primary_email),"
         "emails(subject,received_at,attachments)"
     )
+
+    def recent_imports(
+        self, tenant_id: str, counterparty_id: str, limit: int = 15
+    ) -> list[dict] | None:
+        known = (
+            self.client.table("counterparties").select("id")
+            .eq("tenant_id", tenant_id).eq("id", counterparty_id).limit(1).execute()
+        ).data
+        if not known:
+            return None
+        return (
+            self.client.table("imports")
+            .select(
+                "id,created_at,source_received_at,side,status,row_count,offers_inserted,"
+                "offers_updated,offers_refreshed,offers_closed,notes,emails(subject)"
+            )
+            .eq("tenant_id", tenant_id)
+            .eq("counterparty_id", counterparty_id)
+            .order("source_received_at", desc=True, nullsfirst=False)
+            .order("created_at", desc=True)
+            .limit(limit)
+            .execute()
+        ).data or []
 
     def list_pending_imports(self, tenant_id: str, limit: int = 50) -> list[dict]:
         """Imports nobody has approved or rejected yet, newest first."""

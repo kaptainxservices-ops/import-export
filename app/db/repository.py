@@ -190,6 +190,15 @@ class Repository(Protocol):
         """Emails the pipeline declined to file, newest first."""
         ...
 
+    def recent_imports(
+        self, tenant_id: str, counterparty_id: str, limit: int = 15
+    ) -> list[dict] | None:
+        """One sender's latest lists, newest email first, with the email's subject.
+
+        None when there is no such counterparty on this tenant's board.
+        """
+        ...
+
     def list_pending_imports(self, tenant_id: str, limit: int = 50) -> list[dict]:
         """Price lists nobody has approved or rejected yet, newest first.
 

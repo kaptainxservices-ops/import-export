@@ -470,6 +470,35 @@ class InMemoryRepository:
 
     # ---------------------------------------------------------------- list review
 
+    def recent_imports(
+        self, tenant_id: str, counterparty_id: str, limit: int = 15
+    ) -> list[dict] | None:
+        if self.counterparty_tenant.get(counterparty_id) != tenant_id:
+            return None
+        out = []
+        for stored in self.imports:
+            record = stored.record
+            if record.tenant_id != tenant_id or record.counterparty_id != counterparty_id:
+                continue
+            email = self.emails.get(record.email_id or "")
+            arrived = record.source_received_at or stored.created_at
+            out.append({
+                "id": stored.id,
+                "created_at": stored.created_at.isoformat(),
+                "source_received_at": arrived.isoformat() if arrived else None,
+                "side": record.side,
+                "status": record.status,
+                "row_count": record.row_count,
+                "offers_inserted": record.offers_inserted,
+                "offers_updated": record.offers_updated,
+                "offers_refreshed": record.offers_refreshed,
+                "offers_closed": record.offers_closed,
+                "notes": record.notes,
+                "emails": {"subject": email.subject} if email else None,
+            })
+        out.sort(key=lambda r: r["source_received_at"] or "", reverse=True)
+        return out[:limit]
+
     def list_pending_imports(self, tenant_id: str, limit: int = 50) -> list[dict]:
         """Shaped exactly like the Supabase join, so the API code is exercised the same.
 

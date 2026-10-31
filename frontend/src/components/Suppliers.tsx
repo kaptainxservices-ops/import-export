@@ -1,7 +1,8 @@
-import { useEffect, useState } from "react";
+import { Fragment, useEffect, useState } from "react";
 
 import { fetchSuppliers, updateSupplier, type Supplier } from "../lib/api";
 import { money } from "../lib/money";
+import { SupplierLists } from "./SupplierLists";
 
 /** The API joins price and code into one string; split it so it can be shown properly. */
 function pretty(sample: string): string {
@@ -100,6 +101,7 @@ function SupplierRow({
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
   const [problem, setProblem] = useState<string | null>(null);
+  const [showLists, setShowLists] = useState(false);
 
   async function save(patch: Partial<Supplier>) {
     setSaving(true);
@@ -119,6 +121,7 @@ function SupplierRow({
   }
 
   return (
+    <Fragment>
     <tr className={isNew ? "is-new" : undefined}>
       <td>
         <div>
@@ -134,6 +137,14 @@ function SupplierRow({
           )}
         </div>
         {row.name && !row.no_address && <div className="muted small">{row.primary_email}</div>}
+        <button
+          type="button"
+          className="link small"
+          aria-expanded={showLists}
+          onClick={() => setShowLists((open) => !open)}
+        >
+          {showLists ? "Hide lists" : "What their lists did"}
+        </button>
         {problem && <div className="error small">{problem}</div>}
         {saved && <div className="resolved small">saved</div>}
       </td>
@@ -197,5 +208,13 @@ function SupplierRow({
         </select>
       </td>
     </tr>
+    {showLists && (
+      <tr className="list-history-row">
+        <td colSpan={6}>
+          <SupplierLists id={supplier.id} />
+        </td>
+      </tr>
+    )}
+    </Fragment>
   );
 }

@@ -150,6 +150,7 @@ def reconcile(
     is_complete_list: bool | None = None,
     low_row_count_ratio: float = LOW_ROW_COUNT_RATIO,
     close_scope: set[str] | None = None,
+    update_existing: bool = True,
 ) -> ReconcileResult:
     """Work out what a newly arrived list means.
 
@@ -161,6 +162,11 @@ def reconcile(
     forbids them, and **None — undecided — also forbids them**. A supplier who normally
     sends full lists will occasionally fire off "just got 50 more 15PMs", and reading
     that as a complete list would close everything else they stock.
+
+    `update_existing=False` is for an email that arrived after newer lists from the
+    same sender: it may put on lines the board has never had, but what it says about a
+    line already there is older than what the board holds, so those lines are left as
+    they are -- not repriced, not refreshed, not reopened.
     """
     result = ReconcileResult(row_count=len(incoming))
 
@@ -197,15 +203,23 @@ def reconcile(
             else "flagged_partial_list"
         )
 
+    left_alone = 0
     for item in deduped:
         current = live.get(item.identity_key)
 
         if current is not None:
+            if not update_existing:
+                left_alone += 1
+                continue
             result.actions.append(_compare(current, item))
             continue
 
         previously_closed = closed.get(item.identity_key)
         if previously_closed is not None:
+            if not update_existing:
+                # Closed by a newer list, quite possibly: an older email cannot reopen it.
+                left_alone += 1
+                continue
             result.actions.append(
                 Action(
                     kind="reopen",
@@ -219,6 +233,12 @@ def reconcile(
 
         result.actions.append(
             Action(kind="insert", identity_key=item.identity_key, incoming=item)
+        )
+
+    if left_alone:
+        result.notes.append(
+            f"{left_alone} lines already on the board left as they were: newer lists "
+            f"from this sender have said more recently what they are"
         )
 
     if may_close:

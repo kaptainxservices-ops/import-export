@@ -1658,3 +1658,35 @@ h3.section:first-child { margin-top: 0; }
 
 /* A counterparty that appeared since the tab was last opened. */
 tr.is-new td { background: var(--accent-soft); }
+
+/* ---------------------------------------------------------------- what each list did */
+
+.list-history-row td { background: var(--panel); padding: 10px 16px 14px; }
+.list-history { list-style: none; margin: 0; padding: 0; display: grid; gap: 8px; }
+.list-history li { border-bottom: 1px solid var(--line); padding-bottom: 8px; }
+.list-history li:last-child { border-bottom: none; padding-bottom: 0; }
+.list-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 10px; }
+.list-subject { color: var(--ink); font-weight: 500; }
+.list-counts { margin-left: auto; color: var(--ink-2); font-variant-numeric: tabular-nums; }
+.list-counts .up { color: var(--ok); }
+.list-counts .down { color: var(--danger); }
+.list-why { margin-top: 2px; }
+
+.decision {
+  display: inline-block;
+  padding: 1px 8px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 600;
+  border: 1px solid var(--line-2);
+  background: var(--bg);
+  color: var(--ink-2);
+}
+.decision.replace { background: var(--accent-soft); border-color: var(--accent-line); color: var(--accent-ink); }
+.decision.add,
+.decision.add_new_only { background: var(--ok-soft); border-color: var(--ok-line); color: var(--ok); }
+.decision.held,
+.decision.review { background: var(--warn-soft); border-color: var(--warn-line); color: var(--warn); }
+.decision.unreadable { background: var(--danger-soft); border-color: var(--danger-line); color: var(--danger); }
+.decision.refresh,
+.decision.reject { color: var(--muted); }

@@ -313,6 +313,38 @@ export async function fetchSuppliers(): Promise<Suppliers> {
   return json<Suppliers>(await authorised("/suppliers"), "Loading suppliers");
 }
 
+/** One email from a counterparty, and what it did to the board. */
+export interface SupplierList {
+  id: string;
+  received_at: string | null;
+  side: "sell" | "buy" | null;
+  subject: string | null;
+  action:
+    | "replace"
+    | "add"
+    | "add_new_only"
+    | "refresh"
+    | "reject"
+    | "held"
+    | "review"
+    | "unreadable";
+  decided_by: string;
+  reasons: string[];
+  checked_by_model: boolean;
+  rows: number;
+  added: number;
+  updated: number;
+  closed: number;
+}
+
+export async function fetchSupplierLists(id: string): Promise<SupplierList[]> {
+  const body = await json<{ items: SupplierList[] }>(
+    await authorised(`/suppliers/${encodeURIComponent(id)}/lists`),
+    "Loading lists",
+  );
+  return body.items;
+}
+
 export async function updateSupplier(
   id: string,
   patch: Partial<Pick<Supplier, "default_currency" | "decimal_separator" | "staleness_hours">>,

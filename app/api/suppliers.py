@@ -22,6 +22,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, Field, model_validator
 
 from app.api.deps import current_tenant
+from app.brain.list_decision import parse_note
 from app.brain.sender import PLACEHOLDER_DOMAIN
 
 router = APIRouter(prefix="/suppliers", tags=["suppliers"])
@@ -125,6 +126,86 @@ def list_suppliers(context=Depends(current_tenant)) -> SuppliersOut:
         ),
         currencies=list(CURRENCIES),
     )
+
+
+class ListOut(BaseModel):
+    """One email from this counterparty, and what it did to the board."""
+
+    id: str
+    received_at: str | None
+    side: str | None
+    subject: str | None
+    # replace | add | add_new_only | refresh | reject | held | review | unreadable
+    action: str
+    decided_by: str
+    reasons: list[str]
+    checked_by_model: bool
+    rows: int
+    added: int
+    updated: int
+    closed: int
+
+
+class ListsOut(BaseModel):
+    items: list[ListOut]
+
+
+# What an import said before decisions were recorded on it, read off its status.
+_BY_STATUS = {
+    "same_as_applied": ("refresh", "identical to a list already applied today"),
+    "held_for_review": ("held", "a second list today, waiting for a person"),
+    "failed": ("unreadable", "nothing could be read from it"),
+    "flagged_low_row_count": ("review", "says it is a whole list but is suspiciously short"),
+    "flagged_unparseable": ("review", "most of it could not be read"),
+    "superseded": ("reject", "older than what the board already holds"),
+    "flagged_partial_list": ("add", "read as extra stock; closed nothing"),
+    "applied": ("replace", "applied"),
+}
+
+
+@router.get(
+    "/{supplier_id}/lists", response_model=ListsOut,
+    summary="One counterparty's recent lists and what each did",
+)
+def supplier_lists(supplier_id: str, context=Depends(current_tenant)) -> ListsOut:
+    """The record a trader checks the replace/add engine against: every list, newest
+    first, with the decision taken, who took it, and why."""
+    tenant_id, repository = context
+    rows = repository.recent_imports(tenant_id, supplier_id)
+    if rows is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "no such counterparty on this board")
+
+    items = []
+    for row in rows:
+        stored = parse_note(row.get("notes"))
+        if stored is not None:
+            action, by, reasons = stored.action, stored.decided_by, list(stored.reasons)
+            # A whole list cut short is refused by reconcile after the decision: the
+            # import's status is the final word on whether it went to Review.
+            if row.get("status") == "flagged_low_row_count":
+                action = "review"
+                reasons.append("suspiciously short for a whole list; sent to Review")
+        else:
+            action, reason = _BY_STATUS.get(row.get("status") or "", ("add", ""))
+            by, reasons = "rules", [r for r in (reason, row.get("notes")) if r]
+        email = row.get("emails") or {}
+        items.append(
+            ListOut(
+                id=row["id"],
+                received_at=row.get("source_received_at") or row.get("created_at"),
+                side=row.get("side"),
+                subject=email.get("subject") if isinstance(email, dict) else None,
+                action=action,
+                decided_by=by,
+                reasons=reasons,
+                checked_by_model="checker" in by,
+                rows=row.get("row_count") or 0,
+                added=row.get("offers_inserted") or 0,
+                updated=row.get("offers_updated") or 0,
+                closed=row.get("offers_closed") or 0,
+            )
+        )
+    return ListsOut(items=items)
 
 
 @router.patch("/{supplier_id}", response_model=SupplierOut, summary="Change one supplier")

@@ -19,7 +19,7 @@ from __future__ import annotations
 import re
 
 # Wording that means "here is everything I have".
-_COMPLETE_SIGNALS = re.compile(
+COMPLETE_SIGNALS = re.compile(
     r"\b(?:price\s*list|pricelist|preisliste|prijslijst|listino|lista\s*de\s*precios|"
     r"lista\s*preturi|liste\s*de\s*prix|stock\s*list|stocklist|stock\s*sheet|"
     r"lagerliste|lagerbestand|full\s*stock|current\s*stock|available\s*stock|"
@@ -31,14 +31,16 @@ _COMPLETE_SIGNALS = re.compile(
 # "WTB 50x iPhone 15" alike. On a long list they mean the list; on a few lines they
 # mean an order, and an order is an addition: reading "WTB 50x iPhone 15" as the buyer's
 # complete demand closed every other requirement they had open.
-_TRADE_PREFIX_ONLY = re.compile(
+TRADE_PREFIX_ONLY = re.compile(
     r"^(?:wts|want\s*to\s*sell|wtb|want\s*to\s*buy)$", re.IGNORECASE
 )
 
 # Wording that means "here is something extra".
-_PARTIAL_SIGNALS = re.compile(
-    r"\b(?:just\s*(?:got|arrived|in)|new\s*arrival|additional|extra\s*stock|"
-    r"also\s*have|on\s*top\s*of|special\s*offer|one\s*off|last\s*(?:few|units)|"
+PARTIAL_SIGNALS = re.compile(
+    r"\b(?:just\s*(?:got|arrived|in)|new\s*arrivals?|newly\s*arrived|additional|"
+    r"extra\s*stock|also\s*(?:have|available)|on\s*top\s*of|in\s*addition|"
+    r"(?:some|few|a\s*few)\s*more|more\s*stock|forgot|missed\s*(?:these|this|out)|"
+    r"special\s*offer|one\s*off|last\s*(?:few|units)|"
     r"clearance|quick\s*deal|urgent\s*sale|nachschub|neu\s*eingetroffen)\b",
     re.IGNORECASE,
 )
@@ -70,8 +72,8 @@ def detect_list_completeness(
     if row_count == 0:
         return None, "no rows extracted"
 
-    partial_match = _PARTIAL_SIGNALS.search(text)
-    complete_match = _COMPLETE_SIGNALS.search(text)
+    partial_match = PARTIAL_SIGNALS.search(text)
+    complete_match = COMPLETE_SIGNALS.search(text)
 
     # Wording wins over size. 'Special Offer' with 200 rows is still a supplement, and
     # a supplement's absences mean nothing.
@@ -125,10 +127,10 @@ def _only_trade_prefix(text: str, row_count: int, typical: int | None) -> bool:
     Judged against the sender's own size. Two lines from a buyer who keeps three
     requirements open is their list; one line from a buyer with a hundred is an order.
     """
-    found = list(_COMPLETE_SIGNALS.finditer(text))
+    found = list(COMPLETE_SIGNALS.finditer(text))
     return (
         bool(found)
         and row_count <= SMALL_LIST_ROWS
-        and all(_TRADE_PREFIX_ONLY.match(m.group(0)) for m in found)
+        and all(TRADE_PREFIX_ONLY.match(m.group(0)) for m in found)
         and (typical is None or row_count < typical * 0.5)
     )
