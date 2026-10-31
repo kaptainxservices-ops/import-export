@@ -57,6 +57,12 @@ _EU_COUNTRIES = (
 )
 
 
+_EU_COUNTRY_AT_END = re.compile(
+    rf"(?<![A-Za-z])(?:{'|'.join(c for c in _EU_COUNTRIES if c != 'SE')})[\s.)\]]*$"
+)
+_EU_COUNTRY_IN_BRACKETS = re.compile(rf"[(\[]\s*(?:{'|'.join(_EU_COUNTRIES)})\s*[)\]]")
+
+
 def region_family(code: str | None) -> str | None:
     """The market a region code belongs to: 'ZD/A' and 'EU' are both EU."""
     if not code:
@@ -170,7 +176,12 @@ def normalise_region_code(raw: str | None) -> str | None:
     # A European country written as the market: 'iPhone 16e 128GB Black DE', 'WHITE ITA',
     # 'A175 128GB DACH'. Every one of them is EU stock -- and an India-spec buyer was
     # being offered it, because the line stated no market anyone could read.
-    if re.search(rf"(?<![A-Za-z])(?:{'|'.join(_EU_COUNTRIES)})(?![A-Za-z])", text):
+    #
+    # At the END of the text or in brackets only, which is where every one of those
+    # examples puts it. Anywhere else these two letters are words: 'JBL FLIP ESSENTIAL
+    # SE 3 SPEAKER' is a special edition, not a Swedish one. 'SE' is so often a model
+    # name (iPhone SE, at the end of the line too) that it counts only in brackets.
+    if _EU_COUNTRY_AT_END.search(text) or _EU_COUNTRY_IN_BRACKETS.search(text):
         return "EU"
 
     squashed = _SQUASHED.search(text.upper())

@@ -344,6 +344,25 @@ def test_an_india_spec_buyer_is_not_offered_german_stock():
         != EXACT
 
 
+@pytest.mark.parametrize("text, market", [
+    ("Apple IPhone 16e 128GB Black DE", "EU"),
+    ("Samsung Galaxy A17 128GB WHITE ITA", "EU"),
+    ("A175 128GB black / grey DACH", "EU"),
+    ("iPhone 15 128GB Black (DE)", "EU"),
+    ("Galaxy S24 256GB DE.", "EU"),
+    # Two letters that are words, not countries: Whitehawk's JBL special edition was
+    # sold as Swedish stock, and an iPhone SE would have been too.
+    ("JBL FLIP ESSENTIAL SE 3 SPEAKER (JBLFLIPES3SE) NEW GUN METAL", None),
+    ("Apple iPhone SE", None),
+    ("Apple iPhone SE 64GB Black", None),
+    ("BUY IT NOW iPhone 15 128GB", None),
+])
+def test_a_country_code_is_a_market_only_where_suppliers_write_one(text, market):
+    from app.brain.normalise.regions import normalise_region_code
+
+    assert normalise_region_code(text) == market
+
+
 @pytest.mark.parametrize("wanted, offered", [
     ("Xiaomi Redmi Note 15 Pro 5G 12GB/512GB Blue", "Xiaomi Redmi Note 15 Pro 5G 8/512GB blue"),
     ("Google Pixel 9 Pro 16GB+256GB Obsidian", "Google Pixel 9 Pro 12/256GB Obsidian"),
