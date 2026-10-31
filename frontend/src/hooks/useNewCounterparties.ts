@@ -2,8 +2,10 @@ import { useCallback, useEffect, useRef, useState } from "react";
 
 import { supabase } from "../lib/supabase";
 
+const FIRST_VISIT_LOOKBACK_MS = 48 * 60 * 60 * 1000;
+
 function storageKey(email: string) {
-  return `tvd.counterpartiesSeen.v1:${email}`;
+  return `tvd.counterpartiesSeen.v2:${email}`;
 }
 
 function load(email: string): string | null {
@@ -31,8 +33,8 @@ function save(email: string, since: string) {
  * sits on the tab so a new one is noticed from any screen.
  *
  * "Last looked" is the newest `created_at` seen, a server timestamp, so this laptop's
- * clock cannot hide one or count one twice. A first visit starts from now: an existing
- * list of sixty suppliers is not sixty pieces of news.
+ * clock cannot hide one or count one twice. A first visit counts the last 48 hours: an
+ * existing list of sixty suppliers is not sixty pieces of news, but yesterday's are.
  */
 export function useNewCounterparties(email: string, watching: boolean) {
   const since = useRef<string | null>(load(email));
@@ -60,14 +62,11 @@ export function useNewCounterparties(email: string, watching: boolean) {
 
   const check = useCallback(async () => {
     if (since.current === null) {
-      const { data } = await supabase
-        .from("counterparties")
-        .select("created_at")
-        .order("created_at", { ascending: false })
-        .limit(1);
-      since.current = (data?.[0]?.created_at as string | undefined) ?? new Date().toISOString();
+      // A first visit -- a new browser, or a new address like localhost -- counts the
+      // last two days. Starting from "now" showed nothing until the next new sender,
+      // which looked exactly like a broken badge.
+      since.current = new Date(Date.now() - FIRST_VISIT_LOOKBACK_MS).toISOString();
       save(email, since.current);
-      return;
     }
     const { data, error } = await supabase
       .from("counterparties")
