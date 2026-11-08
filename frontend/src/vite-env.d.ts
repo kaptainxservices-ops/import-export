@@ -8,6 +8,8 @@ interface ImportMetaEnv {
   // Absent in the client's own deployment, which is how the block is turned off.
   readonly VITE_DEMO_EMAIL?: string;
   readonly VITE_DEMO_PASSWORD?: string;
+  // TVD's margin as a % of the seller's price, for the Opportunity estimate. Default 5.
+  readonly VITE_ESTIMATED_MARGIN_PCT?: string;
 }
 
 interface ImportMeta {

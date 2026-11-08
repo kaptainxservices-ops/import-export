@@ -59,6 +59,9 @@ class Settings(BaseSettings):
     # the dashboard falls back to computing the board on every request.
     board_refresh_enabled: bool = True
     board_full_rebuild_hours: float = 6.0
+    # Only offers and requirements confirmed in this many days are matched
+    # (app/brain/window.py). Older lines stay on Sellers and Buyers but are not counted.
+    match_window_days: int = 7
 
     # The model's second opinion before a list closes stock the rules are unsure about
     # (app/brain/list_decision.py). Off, the rules alone decide; the model is never asked

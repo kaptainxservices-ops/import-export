@@ -22,10 +22,13 @@ log = logging.getLogger(__name__)
 
 
 class BoardRefresher:
-    def __init__(self, db_factory, *, settle_seconds: float = 2.0, full_every_hours: float = 6.0):
+    def __init__(self, db_factory, *, settle_seconds: float = 2.0, full_every_hours: float = 6.0,
+                 sweep_minutes: float = 15.0):
         self._db_factory = db_factory
         self._settle = settle_seconds
         self._full_every = full_every_hours * 3600
+        # How often an idle board checks for lines aged out of the match window.
+        self._sweep = sweep_minutes * 60
         self._wake = threading.Event()
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
@@ -50,10 +53,14 @@ class BoardRefresher:
         self._cycle(full=True)
         while not self._stop.is_set():
             remaining = max(1.0, self._full_every - (time.monotonic() - self._last_full))
-            woken = self._wake.wait(timeout=remaining)
+            woken = self._wake.wait(timeout=min(remaining, self._sweep))
             if self._stop.is_set():
                 return
-            if woken:
+            if not woken and remaining > self._sweep:
+                # Nobody wrote anything, but time passed: an incremental refresh notices
+                # lines that have aged out of the match window and rebuilds if any did.
+                self._cycle(full=False)
+            elif woken:
                 # Let a burst of writes (one email is hundreds of rows, and n8n may post
                 # several emails back to back) land before reading what changed.
                 time.sleep(self._settle)

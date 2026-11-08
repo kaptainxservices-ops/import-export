@@ -28,7 +28,7 @@ import json
 import logging
 import threading
 from dataclasses import dataclass, field
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from app.api.matches import (
@@ -43,6 +43,7 @@ from app.api.matches import (
     infer_networks,
 )
 from app.brain.matching import MatchOption, Requirement, fill_requirement, related
+from app.brain.window import recent, window_days
 from app.db.models import BoardOffer
 
 log = logging.getLogger(__name__)
@@ -152,6 +153,17 @@ class SupabaseBoardDB:
         )
         return [ChangedOffer(_board_offer(r), r["status"], r["updated_at"]) for r in rows]
 
+    def aged_out(self, tenant_id: str, after: str, before: str) -> bool:
+        """Whether any live offer's last confirmation falls in [after, before): a line
+        that has just slipped out of the match window since the last refresh."""
+        rows = (
+            self.client.table("offers").select("id")
+            .eq("tenant_id", tenant_id).eq("status", "live")
+            .gte("last_confirmed_at", after).lt("last_confirmed_at", before)
+            .limit(1).execute()
+        ).data
+        return bool(rows)
+
     def changed_counterparties(self, tenant_id: str, since: str) -> list[tuple[str, str]]:
         rows = (
             self.client.table("counterparties").select("id,updated_at")
@@ -179,6 +191,21 @@ def _refresh(db, tenant_id: str, *, full: bool) -> RefreshResult:
     if state is None or fingerprint != state.get("alias_fingerprint"):
         full = True
 
+    # The match window moves with the clock, and nothing writes an offer when it
+    # simply ages: a lot last confirmed eight days ago drops out of matching without
+    # any change event. So each refresh asks whether a line has crossed the window's
+    # edge since the last one, and if so rebuilds everything -- an aged lot can sit in
+    # any requirement's options, and an aged requirement must leave the board.
+    now = _now()
+    window = timedelta(days=window_days())
+    start = datetime.fromisoformat(now) - window
+    if not full and state.get("last_refresh_at"):
+        previous_start = datetime.fromtimestamp(_when0(state["last_refresh_at"]), UTC) - window
+        if previous_start < start and db.aged_out(
+            tenant_id, previous_start.isoformat(), start.isoformat()
+        ):
+            full = True
+
     # Watermarks are read *before* the board, so a change landing mid-refresh is newer
     # than the mark and is picked up by the next one rather than lost between them.
     if full:
@@ -196,11 +223,13 @@ def _refresh(db, tenant_id: str, *, full: bool) -> RefreshResult:
         people_mark = max([t for _, t in people], default=people_since, key=_when0)
 
         if not changed and not changed_people:
-            db.save_state(tenant_id, {"last_refresh_at": _now()})
+            db.save_state(tenant_id, {"last_refresh_at": now})
             return RefreshResult(tenant_id, full=False, skipped=True)
 
-    demand = db.load_board(tenant_id, "buy")
-    supply_offers = db.load_board(tenant_id, "sell")
+    # Only what has been confirmed inside the window is matched. A requirement outside
+    # it is not 'live' below, so its stored row is deleted rather than counted.
+    demand = recent(db.load_board(tenant_id, "buy"), start)
+    supply_offers = recent(db.load_board(tenant_id, "sell"), start)
     supply = infer_networks([_supply(o, aliases) for o in supply_offers])
     stored = db.stored(tenant_id)
 
@@ -218,7 +247,6 @@ def _refresh(db, tenant_id: str, *, full: bool) -> RefreshResult:
 
     names = {o.counterparty_id: o.counterparty_name for o in supply_offers}
     first_seen = {o.id: o.first_seen_at for o in supply_offers}
-    now = _now()
     result = RefreshResult(tenant_id, full=full, examined=len(demand))
 
     rows: list[dict] = []

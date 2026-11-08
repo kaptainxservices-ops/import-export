@@ -107,6 +107,13 @@ class FakeDB:
             if stamp > since
         ]
 
+    def aged_out(self, tenant_id, after, before):
+        return any(
+            o.last_confirmed_at and after <= o.last_confirmed_at < before
+            for o, status, _ in self.offers.values()
+            if status == "live"
+        )
+
     def changed_counterparties(self, tenant_id, since):
         return [(cid, stamp) for cid, (_, stamp) in self.people.items() if stamp > since]
 
@@ -391,3 +398,53 @@ def test_the_middleware_triggers_on_a_successful_write():
         assert Counter.calls == 1
     finally:
         board_refresher.set_refresher(None)
+
+
+# ---------------------------------------------------------------- the match window
+
+
+def _days_ago(days: float) -> str:
+    return (datetime.now(UTC) - timedelta(days=days)).isoformat()
+
+
+def iphone15_lot(confirmed: str | None = None) -> BoardOffer:
+    lot = offer("s15", "sell", "gulf", "Apple iPhone 15 128GB Black", 10, 600.0,
+                capacity=128, colour="Black")
+    return replace(lot, last_confirmed_at=confirmed)
+
+
+def test_a_lot_not_confirmed_this_week_fills_nothing():
+    db = board()
+    db.put(iphone15_lot(_days_ago(8)))
+    refresh(db)
+    assert db.rows["w15"]["state"] not in ("filled", "short")
+
+    db.put(iphone15_lot(_days_ago(1)))
+    refresh(db)
+    assert db.rows["w15"]["state"] == "filled"
+
+
+def test_a_requirement_not_confirmed_this_week_leaves_the_board():
+    db = board()
+    refresh(db)
+    assert "w14" in db.rows
+
+    db.put(replace(db.offers["w14"][0], last_confirmed_at=_days_ago(8)))
+    refresh(db)
+    assert "w14" not in db.rows
+
+
+def test_a_lot_ageing_out_with_no_write_is_noticed_by_the_next_refresh():
+    db = board()
+    db.put(iphone15_lot(_days_ago(6)))
+    refresh(db)
+    assert db.rows["w15"]["state"] == "filled"
+
+    # Two days pass with nothing written: the lot is now eight days old.
+    lot, status, stamp = db.offers["s15"]
+    db.offers["s15"] = (replace(lot, last_confirmed_at=_days_ago(8)), status, stamp)
+    db._state["last_refresh_at"] = _days_ago(2)
+
+    result = refresh(db)
+    assert result.full
+    assert db.rows["w15"]["state"] not in ("filled", "short")

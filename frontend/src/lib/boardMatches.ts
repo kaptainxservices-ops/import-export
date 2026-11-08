@@ -233,6 +233,40 @@ function summarise(rows: MatchBoardRow[], supplyRows: number): MatchBoard {
   };
 }
 
+/**
+ * A short fingerprint of the stored board: the newest row write, the row count, and
+ * the supply count. Any change the backend makes moves at least one of them -- a
+ * rewritten row bumps computed_at (unchanged rows are never rewritten), a deleted row
+ * drops the count, new stock moves supply_rows -- so comparing two of these says
+ * whether the board needs reloading without loading it.
+ *
+ * Null when the stored board is not there: the caller has nothing to compare.
+ */
+export async function boardSignature(): Promise<string | null> {
+  const [latest, counted, state] = await Promise.all([
+    supabase
+      .from("board_matches")
+      .select("computed_at")
+      .order("computed_at", { ascending: false })
+      .limit(1),
+    supabase.from("board_matches").select("offer_id", { count: "exact", head: true }),
+    supabase
+      .from("board_match_state")
+      .select("supply_rows,last_full_at")
+      .order("last_full_at", { ascending: false, nullsFirst: false })
+      .limit(1),
+  ]);
+  if (latest.error || counted.error || state.error) return null;
+  const top = state.data?.[0];
+  if (!top?.last_full_at) return null;
+  return [
+    latest.data?.[0]?.computed_at ?? "",
+    counted.count ?? 0,
+    top.supply_rows ?? 0,
+    top.last_full_at,
+  ].join("|");
+}
+
 /** Fillable requirements first matched after `since`, newest first. */
 export async function fetchNewMatches(since: string): Promise<StoredMatch[]> {
   const { data, error } = await supabase

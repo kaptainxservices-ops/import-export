@@ -8,7 +8,7 @@ import {
   type MatchSort,
 } from "../lib/api";
 import { bigMoney, money } from "../lib/money";
-import { fetchStoredBoard, NoStoredBoard } from "../lib/boardMatches";
+import { boardSignature, fetchStoredBoard, NoStoredBoard } from "../lib/boardMatches";
 import { supabase } from "../lib/supabase";
 import { relativeAge } from "../lib/types";
 
@@ -77,19 +77,63 @@ export function MatchBoard({
   // The stored board changes when the backend finishes recomputing after a list lands.
   // One email rewrites many rows, so the events are gathered into one reload.
   const [changes, setChanges] = useState(0);
+
+  // What the board looked like at the last load. Compared against the backend's
+  // current one to tell whether anything was missed.
+  const signature = useRef<string | null>(null);
+
   useEffect(() => {
     let settle: number | undefined;
     const bump = () => {
       window.clearTimeout(settle);
       settle = window.setTimeout(() => setChanges((n) => n + 1), 1000);
     };
+
+    // Realtime is the fast path, but not a reliable one on its own: the socket drops
+    // whenever the laptop sleeps, the tab sits in the background or the network
+    // blips, and events sent while it was down are never replayed. Relying on it
+    // alone left the tiles frozen on old numbers until a page reload, while the
+    // match alerts (which re-check on focus) went on announcing new matches. So the
+    // board also asks whether anything changed -- on focus, on reconnect, and on a
+    // slow timer while visible -- and reloads only when something did.
+    let checking = false;
+    const catchUp = async () => {
+      if (checking || document.visibilityState !== "visible") return;
+      checking = true;
+      try {
+        const now = await boardSignature();
+        if (now !== null && signature.current !== null && now !== signature.current) bump();
+      } finally {
+        checking = false;
+      }
+    };
+
+    let connectedBefore = false;
     const channel = supabase
       .channel("board-matches")
       .on("postgres_changes", { event: "*", schema: "public", table: "board_matches" }, bump)
-      .on("postgres_changes", { event: "*", schema: "public", table: "board_match_state" }, bump)
-      .subscribe();
+      // The state row is touched by every refresh, including the idle ones that only
+      // check for lines leaving the one-week window: compare before reloading.
+      .on("postgres_changes", { event: "*", schema: "public", table: "board_match_state" }, () =>
+        void catchUp(),
+      )
+      .subscribe((status) => {
+        if (status !== "SUBSCRIBED") return;
+        // A reconnect: anything that changed while the socket was down was missed.
+        if (connectedBefore) void catchUp();
+        connectedBefore = true;
+      });
+
+    const poll = window.setInterval(() => void catchUp(), CATCH_UP_MS);
+    const onVisible = () => void catchUp();
+    document.addEventListener("visibilitychange", onVisible);
+    window.addEventListener("focus", onVisible);
+
     return () => {
       window.clearTimeout(settle);
+      window.clearInterval(poll);
+      document.removeEventListener("visibilitychange", onVisible);
+      window.removeEventListener("focus", onVisible);
       void supabase.removeChannel(channel);
     };
   }, []);
@@ -114,6 +158,9 @@ export function MatchBoard({
 
     void (async () => {
       try {
+        // Read before the board, so a change landing mid-load leaves the stored
+        // signature behind the backend's and the next check reloads it.
+        const seen = live.current ? null : await boardSignature();
         let next: Board;
         if (live.current) {
           next = await fetchMatchBoard(filters);
@@ -128,7 +175,10 @@ export function MatchBoard({
             next = await fetchMatchBoard(filters);
           }
         }
-        if (!cancelled) setBoard(next);
+        if (!cancelled) {
+          setBoard(next);
+          if (seen !== null) signature.current = seen;
+        }
       } catch (problem) {
         if (!cancelled) {
           setError(problem instanceof Error ? problem.message : String(problem));
@@ -144,6 +194,31 @@ export function MatchBoard({
   }, [brand, category, query, clientKind, clientId, sort, refreshKey, changes]);
 
   const narrowed = Boolean(brand || category || client || query);
+
+  // TVD's margin per currency, largest first: the real margin where the buyer gave a
+  // price, an estimate on the seller's quote where they did not.
+  const opportunity = (() => {
+    const totals = new Map<string | null, number>();
+    let known = 0;
+    let estimated = 0;
+    for (const r of board?.rows ?? []) {
+      if (r.state !== "filled" && r.state !== "short") continue;
+      if (r.total_margin !== null) {
+        totals.set(r.currency, (totals.get(r.currency) ?? 0) + r.total_margin);
+        known += 1;
+      } else if (r.blended_unit_cost !== null && r.filled_quantity > 0) {
+        const cur = r.best_currency ?? r.currency;
+        const margin = r.filled_quantity * r.blended_unit_cost * (ESTIMATED_MARGIN_PCT / 100);
+        totals.set(cur, (totals.get(cur) ?? 0) + margin);
+        estimated += 1;
+      }
+    }
+    return {
+      totals: [...totals.entries()].sort((a, b) => b[1] - a[1]),
+      known,
+      estimated,
+    };
+  })();
 
   const filters = (
     <>
@@ -283,15 +358,54 @@ export function MatchBoard({
     <>
       {filters}
       <div className="tiles">
-        <Tile label="Live matches" value={String(board.live_matches)} />
-        <Tile label="Unmet demand" value={String(board.unmet_demand)} tone="warn" />
+        <Tile
+          label="Live matches"
+          value={String(board.live_matches)}
+          hint="Requirements confirmed in the last 7 days that current supply can fill"
+        />
+        <Tile
+          label="Unmet demand"
+          value={String(board.unmet_demand)}
+          tone="warn"
+          hint="Requirements confirmed in the last 7 days that nothing can fill yet"
+        />
         <Tile
           label="Opportunity"
-          value={bigMoney(board.opportunity, board.currency)}
+          // TVD's margin on every fillable match. Where the buyer named a price that is
+          // the real margin; where they did not -- most WTB lists -- it is estimated at
+          // ESTIMATED_MARGIN_PCT on the seller's quote. One total per currency: adding
+          // euros to dollars needs a rate, and the board never guesses one.
+          value={
+            opportunity.totals.length > 0
+              ? bigMoney(opportunity.totals[0][1], opportunity.totals[0][0])
+              : "—"
+          }
+          sub={
+            opportunity.totals.length > 0
+              ? [
+                  ...opportunity.totals
+                    .slice(1)
+                    .map(([cur, amount]) => `+ ${bigMoney(amount, cur)}`),
+                  opportunity.known > 0 ? `${opportunity.known} at buyer price` : null,
+                  opportunity.estimated > 0
+                    ? `${opportunity.estimated} est. at ${ESTIMATED_MARGIN_PCT}%`
+                    : null,
+                ]
+                  .filter(Boolean)
+                  .join(" · ")
+              : undefined
+          }
           tone="ok"
-          hint="Total margin on the best option for every fillable requirement"
+          hint={
+            "TVD's margin on this week's fillable matches. Real margin where the buyer gave " +
+            `a target price; otherwise ${ESTIMATED_MARGIN_PCT}% on the seller's quote.`
+          }
         />
-        <Tile label="Supply rows" value={board.supply_rows.toLocaleString()} />
+        <Tile
+          label="Supply rows"
+          value={board.supply_rows.toLocaleString()}
+          hint="Seller lines confirmed in the last 7 days"
+        />
       </div>
 
       <div className="match-rows">
@@ -309,6 +423,15 @@ export function MatchBoard({
   );
 }
 
+/** TVD's margin on a deal, as a percentage of the seller's price: used to estimate the
+ * Opportunity tile where the buyer stated no price. Set VITE_ESTIMATED_MARGIN_PCT to
+ * change it. */
+const ESTIMATED_MARGIN_PCT = Number(import.meta.env.VITE_ESTIMATED_MARGIN_PCT ?? 5) || 5;
+
+/** How often a visible board checks for changes realtime may have missed. One small
+ * query set; the board itself is reloaded only when the answer has moved. */
+const CATCH_UP_MS = 20_000;
+
 /** relativeAge reads "6 days" for a column headed Received; here it needs the "ago". */
 function ago(stamp: string): string {
   const age = relativeAge(stamp);
@@ -320,16 +443,19 @@ function Tile({
   value,
   tone,
   hint,
+  sub,
 }: {
   label: string;
   value: string;
   tone?: "ok" | "warn";
   hint?: string;
+  sub?: string;
 }) {
   return (
     <div className="tile" title={hint}>
       <div className="tile-label">{label}</div>
       <div className={`tile-value ${tone ?? ""}`}>{value}</div>
+      {sub && <div className="tile-sub">{sub}</div>}
     </div>
   );
 }

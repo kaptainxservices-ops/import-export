@@ -33,6 +33,7 @@ from app.brain.normalise import expand_variants
 from app.brain.normalise.canonical import canonical_model
 from app.brain.normalise.product import build_match_key
 from app.brain.resolve_models import effective_aliases
+from app.brain.window import recent
 from app.db.models import BoardOffer
 
 router = APIRouter(prefix="/matches", tags=["matches"])
@@ -188,9 +189,9 @@ def board(
 
     aliases = _aliases(repository, tenant_id)
     demand = narrow(
-        repository.load_board(tenant_id, "buy"), brand, category, search=q, buyer=buyer
+        recent(repository.load_board(tenant_id, "buy")), brand, category, search=q, buyer=buyer
     )
-    supply_offers = repository.load_board(tenant_id, "sell")
+    supply_offers = recent(repository.load_board(tenant_id, "sell"))
     supply = infer_networks([_supply(o, aliases) for o in supply_offers])
 
     # Free: every supply row already carries its counterparty's name from the join, so
@@ -467,7 +468,7 @@ def fill(
 
     aliases = _aliases(repository, tenant_id)
     supply = infer_networks(
-        [_supply(o, aliases) for o in repository.load_board(tenant_id, "sell")]
+        [_supply(o, aliases) for o in recent(repository.load_board(tenant_id, "sell"))]
     )
     options = fill_requirement(
         _requirement(subject, aliases), supply, include_near_misses=include_near_misses
@@ -487,7 +488,9 @@ def place(
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "that row is not a seller offer")
 
     aliases = _aliases(repository, tenant_id)
-    demand = [_requirement(o, aliases) for o in repository.load_board(tenant_id, "buy")]
+    demand = [
+        _requirement(o, aliases) for o in recent(repository.load_board(tenant_id, "buy"))
+    ]
     options = place_offer(_supply(subject, aliases), demand)
     return _response(subject, options, "place", repository, tenant_id)
 

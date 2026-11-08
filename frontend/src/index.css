@@ -638,6 +638,11 @@ main {
   color: var(--brand);
 }
 
+.tile-sub {
+  margin-top: 4px;
+  font-size: 0.8rem;
+  color: var(--muted, #6b7280);
+}
 .tile-value.ok   { color: var(--ok); }
 .tile-value.warn {
   color: var(--warn);

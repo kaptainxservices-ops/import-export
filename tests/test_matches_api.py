@@ -4,10 +4,27 @@ These are the first endpoints a browser calls with a user's session, so most of 
 matters here is refusal: no token, a bad token, or the wrong side of the board.
 """
 
+from datetime import UTC, datetime
+
+import pytest
+
 from app.api.matches import narrow
 from app.db.memory import InMemoryRepository
 from app.db.models import BoardOffer, TenantConfig
 from app.dependencies import set_repository
+
+
+@pytest.fixture(autouse=True)
+def _fixed_clock(monkeypatch):
+    """The board fixtures are dated late October. Pin the match window's clock to just
+    after them, so the tests do not start failing once those dates age out of it."""
+    from app.brain import window
+
+    now = datetime(2026, 10, 31, 12, 0, tzinfo=UTC)
+    real = window.window_start
+    monkeypatch.setattr(
+        window, "window_start", lambda now_=None, days=None: real(now_ or now, days)
+    )
 
 
 def want(row_id: str, brand: str | None, category: str | None) -> BoardOffer:
