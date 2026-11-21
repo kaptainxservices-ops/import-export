@@ -4,6 +4,8 @@ import type { Session } from "@supabase/supabase-js";
 import { Deals } from "./components/Deals";
 import { Login } from "./components/Login";
 import { MatchBoard } from "./components/MatchBoard";
+import { ClientList } from "./components/ClientList";
+import { CounterpartyPanel, type Side as PartySide } from "./components/CounterpartyPanel";
 import { MatchDrawer, type MatchSubject } from "./components/MatchDrawer";
 import { MatchToasts } from "./components/MatchToasts";
 import { OfferBoard } from "./components/OfferBoard";
@@ -46,6 +48,24 @@ function Board({ email }: { email: string }) {
   const [tab, setTab] = useState<Tab>("matches");
   const [selected, setSelected] = useState<Offer | null>(null);
   const [matching, setMatching] = useState<MatchSubject | null>(null);
+  // One buyer's or seller's products and matches, for a single combined email.
+  const [party, setParty] = useState<{ side: PartySide; id: string } | null>(null);
+
+  function openBuyer(buyerId: string) {
+    setMatching(null);
+    setParty({ side: "buy", id: buyerId });
+  }
+
+  // Buyers and Sellers each show either their rows or a list of the counterparties.
+  const [sideView, setSideView] = useState<Record<Side, "rows" | "clients">>({
+    buy: "rows",
+    sell: "rows",
+  });
+
+  function openSeller(sellerId: string) {
+    setMatching(null);
+    setParty({ side: "sell", id: sellerId });
+  }
   // Bumped when a review is resolved, to pull the board again. Resolving an email is
   // the one action in this app that adds rows, so it is the one that has to invalidate.
   const [resolved, setResolved] = useState(0);
@@ -196,6 +216,7 @@ function Board({ email }: { email: string }) {
         <div hidden={tab !== "matches"}>
           <MatchBoard
             onOpen={openRequirement}
+            onBuyer={openBuyer}
             buyers={buyers}
             suppliers={sellers}
             sort={matchSort}
@@ -209,6 +230,32 @@ function Board({ email }: { email: string }) {
           (side) =>
             opened.has(side) && (
               <div key={side} hidden={tab !== side}>
+                <div className="view-toggle">
+                  <div className="seg" role="group" aria-label="View">
+                    <button
+                      className={sideView[side] === "rows" ? "on" : ""}
+                      onClick={() => setSideView((v) => ({ ...v, [side]: "rows" }))}
+                    >
+                      {side === "sell" ? "All lots" : "All requirements"}
+                    </button>
+                    <button
+                      className={sideView[side] === "clients" ? "on" : ""}
+                      onClick={() => setSideView((v) => ({ ...v, [side]: "clients" }))}
+                    >
+                      {side === "sell" ? "Sellers list" : "Buyers list"}
+                    </button>
+                  </div>
+                </div>
+                {sideView[side] === "clients" && (
+                  <ClientList
+                    side={side}
+                    clients={side === "sell" ? sellers : buyers}
+                    names={supplierNames}
+                    active={tab === side}
+                    onOpen={side === "sell" ? openSeller : openBuyer}
+                  />
+                )}
+                <div hidden={sideView[side] === "clients"}>
                 <OfferBoard
                   side={side}
                   active={tab === side}
@@ -219,6 +266,7 @@ function Board({ email }: { email: string }) {
                   onSelect={setSelected}
                   onMatch={setMatching}
                 />
+                </div>
               </div>
             ),
         )}
@@ -244,10 +292,31 @@ function Board({ email }: { email: string }) {
         <MatchDrawer
           offer={matching}
           onClose={() => setMatching(null)}
+          onBuyer={openBuyer}
+          onSeller={openSeller}
           onShowOffer={(offerId, side) => {
             setMatching(null);
             setTab(side);
             setPin((prev) => ({ side, offerId, n: (prev?.n ?? 0) + 1 }));
+          }}
+        />
+      )}
+      {party && (
+        <CounterpartyPanel
+          key={`${party.side}:${party.id}`}
+          side={party.side}
+          partyId={party.id}
+          onClose={() => setParty(null)}
+          onOpenItem={(r) => {
+            setParty(null);
+            setMatching({
+              id: r.subject_id,
+              side: "buy",
+              description: r.subject_description,
+              quantity: r.subject_quantity,
+              unit_price: r.subject_price,
+              currency: r.subject_currency,
+            });
           }}
         />
       )}

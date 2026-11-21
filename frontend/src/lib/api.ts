@@ -19,7 +19,20 @@ export interface Allocation {
   unit_price: number | null;
   currency: string | null;
   description: string;
+  /** What the lot is, as fields. Null where the row did not state it. */
+  capacity_gb?: number | null;
+  ram_gb?: number | null;
+  colour?: string | null;
+  region_code?: string | null;
+  network?: string | null;
+  connectivity?: string | null;
+  grade?: string | null;
+  edition?: string | null;
+  country?: string | null;
 }
+
+/** full: covers the quantity at the asked spec · partial: short · near_miss: other spec */
+export type MatchType = "full" | "partial" | "near_miss";
 
 export interface MatchOption {
   kind: "exact" | "combination" | "partial" | "near_miss";
@@ -39,6 +52,9 @@ export interface MatchOption {
   differences?: Difference[];
   /** Every note, sorted by what it is about. */
   notes?: OptionNote[];
+  /** Position in the engine's ranking, best first, across all groups. */
+  rank?: number;
+  match_type?: MatchType;
 }
 
 export interface Difference {
@@ -63,6 +79,17 @@ export interface Matches {
   direction: "fill" | "place";
   groups: Record<string, MatchOption[]>;
   total_options: number;
+  /** The buyer when filling, the seller when placing. */
+  subject_counterparty_id?: string | null;
+  subject_counterparty_name?: string | null;
+}
+
+export interface BuyerMatches {
+  id: string;
+  name: string | null;
+  email: string | null;
+  /** Every open requirement of this buyer, each with its ways to fill it. */
+  requirements: Matches[];
 }
 
 export interface ReviewItem {
@@ -143,6 +170,39 @@ export async function findMatches(
     `/matches/${direction}?offer_id=${encodeURIComponent(offerId)}`,
   );
   return json<Matches>(response, "Matching");
+}
+
+/** One buyer: every open requirement, each matched against the whole board. */
+export async function findBuyerMatches(buyerId: string): Promise<BuyerMatches> {
+  const response = await authorised(`/matches/buyer?buyer_id=${encodeURIComponent(buyerId)}`);
+  return json<BuyerMatches>(response, "Loading the buyer");
+}
+
+export interface SellerMatches {
+  id: string;
+  name: string | null;
+  email: string | null;
+  /** Every live lot of this seller, each with the buyers it could go to. */
+  lots: Matches[];
+}
+
+/** One seller: every live lot, each placed against the whole board. */
+export async function findSellerMatches(sellerId: string): Promise<SellerMatches> {
+  const response = await authorised(`/matches/seller?seller_id=${encodeURIComponent(sellerId)}`);
+  return json<SellerMatches>(response, "Loading the seller");
+}
+
+/**
+ * Better wording for a quote email. The server refuses any rewrite that changes a
+ * figure, so the promise "AI changes wording, never numbers" is checked, not hoped.
+ */
+export async function polishEmail(text: string): Promise<string> {
+  const response = await authorised("/matches/polish", { text });
+  if (response.status === 422) {
+    const body = await response.json().catch(() => null);
+    throw new Error((body && typeof body.detail === "string" && body.detail) || "No rewrite.");
+  }
+  return (await json<{ text: string }>(response, "Polishing")).text;
 }
 
 export interface Supplier {

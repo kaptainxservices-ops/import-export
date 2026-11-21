@@ -90,6 +90,14 @@ export async function fetchStoredBoard(filters: MatchBoardQuery): Promise<MatchB
     throw new NoStoredBoard(stateError?.message ?? "the stored board has not been built yet");
   }
 
+  const rows = await fetchStoredRows(filters);
+  const shown = rows.map((row) => toBoardRow(row, filters.supplier));
+  rankRows(shown, filters.sort ?? "best");
+  return summarise(shown, (state.supply_rows as number) ?? 0);
+}
+
+/** The stored rows themselves, every option included. */
+export async function fetchStoredRows(filters: MatchBoardQuery = {}): Promise<StoredMatch[]> {
   const rows: StoredMatch[] = [];
   for (let start = 0; start < MAX_ROWS; start += PAGE) {
     let query = supabase
@@ -111,10 +119,7 @@ export async function fetchStoredBoard(filters: MatchBoardQuery): Promise<MatchB
     rows.push(...((data ?? []) as unknown as StoredMatch[]));
     if (!data || data.length < PAGE) break;
   }
-
-  const shown = rows.map((row) => toBoardRow(row, filters.supplier));
-  rankRows(shown, filters.sort ?? "best");
-  return summarise(shown, (state.supply_rows as number) ?? 0);
+  return rows;
 }
 
 /**

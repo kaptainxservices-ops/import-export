@@ -51,6 +51,18 @@ class AllocationOut(BaseModel):
     unit_price: float | None
     currency: str | None = None
     description: str
+    # What the lot is, as fields rather than text, so the dashboard can offer the
+    # variants in a match list as filters. Whatever the row did not state stays None:
+    # a chip is offered only for a detail that is stated and differs between rows.
+    capacity_gb: int | None = None
+    ram_gb: int | None = None
+    colour: str | None = None
+    region_code: str | None = None
+    network: str | None = None
+    connectivity: str | None = None
+    grade: str | None = None
+    edition: str | None = None
+    country: str | None = None
 
 
 class DifferenceOut(BaseModel):
@@ -84,6 +96,13 @@ class OptionOut(BaseModel):
     # about. The plain lists stay for anything still reading them.
     differences: list[DifferenceOut] = []
     notes: list[NoteOut] = []
+    # Position in the engine's own ranking, best first, across every group. Lets the
+    # dashboard show the whole list in 'best' order once the groups are flattened.
+    rank: int = 0
+    # The three-way split the client reads at a glance: 'full' covers the whole
+    # quantity at the asked spec (one supplier or several), 'partial' leaves a
+    # shortfall, 'near_miss' is a different spec.
+    match_type: str = "full"
 
 
 class MatchesOut(BaseModel):
@@ -95,6 +114,9 @@ class MatchesOut(BaseModel):
     direction: str
     groups: dict[str, list[OptionOut]]
     total_options: int
+    # Who owns the subject row: the buyer when filling, the seller when placing.
+    subject_counterparty_id: str | None = None
+    subject_counterparty_name: str | None = None
 
 
 # ---------------------------------------------------------------- auth
@@ -473,7 +495,7 @@ def fill(
     options = fill_requirement(
         _requirement(subject, aliases), supply, include_near_misses=include_near_misses
     )
-    return _response(subject, options, "fill", repository, tenant_id)
+    return _response(subject, options, "fill", repository, tenant_id, _lots(supply))
 
 
 @router.get("/place", response_model=MatchesOut, summary="Ways to place a seller's lot")
@@ -492,7 +514,7 @@ def place(
         _requirement(o, aliases) for o in recent(repository.load_board(tenant_id, "buy"))
     ]
     options = place_offer(_supply(subject, aliases), demand)
-    return _response(subject, options, "place", repository, tenant_id)
+    return _response(subject, options, "place", repository, tenant_id, _lots(demand))
 
 
 # ---------------------------------------------------------------- plumbing
@@ -668,19 +690,35 @@ def _supply(offer: BoardOffer, aliases: dict[str, str] | None = None) -> Supply:
     )
 
 
+def _lots(rows) -> dict[str, Supply | Requirement]:
+    """The rows a match list can point at, by id, for reading each leg's spec."""
+    return {row.id: row for row in rows}
+
+
+def match_type(option: MatchOption) -> str:
+    if option.kind == "near_miss":
+        return "near_miss"
+    return "partial" if option.shortfall else "full"
+
+
 def _response(
     subject: BoardOffer,
     options: list[MatchOption],
     direction: str,
     repository,
     tenant_id: str,
+    lots: dict[str, Supply | Requirement] | None = None,
+    names: dict[str, str] | None = None,
 ) -> MatchesOut:
     # Counterparty names are looked up once for the whole response rather than per
     # allocation: a combination of three suppliers would otherwise be three round trips.
-    names = _counterparty_names(repository, tenant_id, options)
+    if names is None:
+        names = _counterparty_names(repository, tenant_id, options)
+    lots = lots or {}
+    ranks = {id(option): index for index, option in enumerate(options)}
 
     groups = {
-        name: [_option(option, names) for option in items]
+        name: [_option(option, names, lots, ranks.get(id(option), 0)) for option in items]
         for name, items in group_options(options).items()
     }
 
@@ -693,6 +731,8 @@ def _response(
         direction=direction,
         groups=groups,
         total_options=len(options),
+        subject_counterparty_id=subject.counterparty_id,
+        subject_counterparty_name=subject.counterparty_name,
     )
 
 
@@ -715,9 +755,33 @@ def _counterparty_names(repository, tenant_id: str, options: list[MatchOption]) 
     return {r["id"]: r.get("name") or r.get("primary_email") or r["id"] for r in rows}
 
 
-def _option(option: MatchOption, names: dict[str, str]) -> OptionOut:
+def _spec(lot: Supply | Requirement | None) -> dict:
+    if lot is None:
+        return {}
+    return {
+        "capacity_gb": lot.capacity_gb,
+        "ram_gb": lot.ram_gb,
+        "colour": lot.colour,
+        "region_code": lot.region_code,
+        "network": lot.network,
+        "connectivity": lot.connectivity,
+        "grade": lot.grade,
+        "edition": lot.edition,
+        "country": lot.country,
+    }
+
+
+def _option(
+    option: MatchOption,
+    names: dict[str, str],
+    lots: dict[str, Supply | Requirement] | None = None,
+    rank: int = 0,
+) -> OptionOut:
+    lots = lots or {}
     return OptionOut(
         kind=option.kind,
+        rank=rank,
+        match_type=match_type(option),
         allocations=[
             AllocationOut(
                 offer_id=a.offer_id,
@@ -727,6 +791,7 @@ def _option(option: MatchOption, names: dict[str, str]) -> OptionOut:
                 unit_price=a.unit_price,
                 currency=a.currency,
                 description=a.description,
+                **_spec(lots.get(a.offer_id)),
             )
             for a in option.allocations
         ],
@@ -746,4 +811,121 @@ def _option(option: MatchOption, names: dict[str, str]) -> OptionOut:
             for d in option.differences
         ],
         notes=[NoteOut(kind=n.kind, text=n.text) for n in option.notes],
+    )
+
+
+# ---------------------------------------------------------------- one buyer
+
+
+class BuyerOut(BaseModel):
+    id: str
+    name: str | None
+    email: str | None
+    # Every open requirement of this buyer, each with its own ways to fill it.
+    requirements: list[MatchesOut]
+
+
+@router.get("/buyer", response_model=BuyerOut, summary="One buyer: what they want, and every match")
+def buyer(
+    buyer_id: str = Query(..., description="counterparty id of the buyer"),
+    context=Depends(current_tenant),
+) -> BuyerOut:
+    tenant_id, repository = context
+    party = repository.get_counterparty(tenant_id, buyer_id)
+    wants = [
+        o for o in recent(repository.load_board(tenant_id, "buy")) if o.counterparty_id == buyer_id
+    ]
+    if party is None and not wants:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "no such buyer")
+
+    aliases = _aliases(repository, tenant_id)
+    supply = infer_networks(
+        [_supply(o, aliases) for o in recent(repository.load_board(tenant_id, "sell"))]
+    )
+    lots = _lots(supply)
+
+    found = [(want, fill_requirement(_requirement(want, aliases), supply)) for want in wants]
+    # One name lookup for every option of every requirement.
+    names = _counterparty_names(
+        repository, tenant_id, [option for _, options in found for option in options]
+    )
+
+    return BuyerOut(
+        id=buyer_id,
+        name=(party.name if party else None) or (wants[0].counterparty_name if wants else None),
+        email=party.primary_email if party else None,
+        requirements=[
+            _response(want, options, "fill", repository, tenant_id, lots, names)
+            for want, options in found
+        ],
+    )
+
+
+# ---------------------------------------------------------------- polish a quote email
+
+
+class PolishIn(BaseModel):
+    text: str = Field(max_length=20000)
+
+
+class PolishOut(BaseModel):
+    text: str
+
+
+@router.post("/polish", response_model=PolishOut, summary="Improve a quote email's wording")
+def polish_email(body: PolishIn, context=Depends(current_tenant)) -> PolishOut:
+    """Wording only. A rewrite that changes any figure is refused, never returned."""
+    from app.brain.llm.polish import polish
+
+    result = polish(body.text)
+    if result.text is None:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, result.reason or "no rewrite")
+    return PolishOut(text=result.text)
+
+
+# ---------------------------------------------------------------- one seller
+
+
+class SellerOut(BaseModel):
+    id: str
+    name: str | None
+    email: str | None
+    # Every live lot of this seller, each with the buyers it could go to.
+    lots: list[MatchesOut]
+
+
+@router.get("/seller", response_model=SellerOut, summary="One seller: lots and buyers")
+def seller(
+    seller_id: str = Query(..., description="counterparty id of the seller"),
+    context=Depends(current_tenant),
+) -> SellerOut:
+    tenant_id, repository = context
+    party = repository.get_counterparty(tenant_id, seller_id)
+    lots = [
+        o
+        for o in recent(repository.load_board(tenant_id, "sell"))
+        if o.counterparty_id == seller_id
+    ]
+    if party is None and not lots:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "no such seller")
+
+    aliases = _aliases(repository, tenant_id)
+    demand = [
+        _requirement(o, aliases) for o in recent(repository.load_board(tenant_id, "buy"))
+    ]
+    wanted = _lots(demand)
+
+    found = [(lot, place_offer(_supply(lot, aliases), demand)) for lot in lots]
+    names = _counterparty_names(
+        repository, tenant_id, [option for _, options in found for option in options]
+    )
+
+    return SellerOut(
+        id=seller_id,
+        name=(party.name if party else None) or (lots[0].counterparty_name if lots else None),
+        email=party.primary_email if party else None,
+        lots=[
+            _response(lot, options, "place", repository, tenant_id, wanted, names)
+            for lot, options in found
+        ],
     )

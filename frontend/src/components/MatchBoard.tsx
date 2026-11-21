@@ -14,6 +14,8 @@ import { relativeAge } from "../lib/types";
 
 interface Props {
   onOpen: (row: MatchBoardRow) => void;
+  /** Open one buyer's products and matches. */
+  onBuyer?: (buyerId: string) => void;
   /** Counterparties with live requirements, and with live lots. */
   buyers: ClientOption[];
   suppliers: ClientOption[];
@@ -38,6 +40,7 @@ interface Props {
  */
 export function MatchBoard({
   onOpen,
+  onBuyer,
   buyers,
   suppliers,
   sort,
@@ -416,7 +419,7 @@ export function MatchBoard({
           <span className="num">Value</span>
         </div>
         {board.rows.map((row) => (
-          <Row key={row.offer_id} row={row} onOpen={onOpen} isNew={fresh.has(row.offer_id)} />
+          <Row key={row.offer_id} row={row} onOpen={onOpen} onBuyer={onBuyer} isNew={fresh.has(row.offer_id)} />
         ))}
       </div>
     </>
@@ -479,10 +482,12 @@ const STATE_LABEL: Record<MatchBoardRow["state"], string> = {
 function Row({
   row,
   onOpen,
+  onBuyer,
   isNew,
 }: {
   row: MatchBoardRow;
   onOpen: (row: MatchBoardRow) => void;
+  onBuyer?: (buyerId: string) => void;
   isNew: boolean;
 }) {
   const parts = row.spec_parts ?? (row.spec ? row.spec.split(" · ") : []);
@@ -510,7 +515,30 @@ function Row({
           </div>
         )}
         <div className="mr-buyer">
-          {row.counterparty_name ?? "Buyer not named"}
+          {row.buyer_id && onBuyer ? (
+            // A span, not a button: the whole row is already a button.
+            <span
+              role="button"
+              tabIndex={0}
+              className="link buyer-link"
+              title="See everything this buyer wants and draft one email"
+              onClick={(e) => {
+                e.stopPropagation();
+                onBuyer(row.buyer_id as string);
+              }}
+              onKeyDown={(e) => {
+                if (e.key === "Enter" || e.key === " ") {
+                  e.preventDefault();
+                  e.stopPropagation();
+                  onBuyer(row.buyer_id as string);
+                }
+              }}
+            >
+              {row.counterparty_name ?? "Buyer not named"}
+            </span>
+          ) : (
+            (row.counterparty_name ?? "Buyer not named")
+          )}
           {row.country && <span className="muted"> · {row.country}</span>}
         </div>
       </div>

@@ -1,6 +1,22 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 
 import { findMatches, type Matches, type MatchOption, type OptionNote } from "../lib/api";
+import {
+  DIMENSION_LABEL,
+  flatten,
+  passesSearch,
+  passesVariants,
+  sortOptions,
+  specLine,
+  TYPE_LABEL,
+  typeCounts,
+  typeOf,
+  unitPrice,
+  variantFacets,
+  type PriceSort,
+  type VariantDimension,
+  type VariantSelection,
+} from "../lib/matchList";
 import { money } from "../lib/money";
 import type { Offer } from "../lib/types";
 
@@ -41,6 +57,16 @@ function savedMarkup(): number {
   }
 }
 
+const LAYOUT_KEY = "tvd.matches.layout";
+
+function savedLayout(): "grouped" | "flat" {
+  try {
+    return window.localStorage.getItem(LAYOUT_KEY) === "flat" ? "flat" : "grouped";
+  } catch {
+    return "grouped";
+  }
+}
+
 export type MatchSubject = Pick<
   Offer,
   "id" | "side" | "description" | "quantity" | "unit_price" | "currency"
@@ -50,10 +76,16 @@ export function MatchDrawer({
   offer,
   onClose,
   onShowOffer,
+  onBuyer,
+  onSeller,
 }: {
   offer: MatchSubject;
   onClose: () => void;
   onShowOffer?: (offerId: string, side: "sell" | "buy") => void;
+  /** Open one buyer: everything they want and every match for it. */
+  onBuyer?: (buyerId: string) => void;
+  /** Open one seller: every lot they have and who could buy it. */
+  onSeller?: (sellerId: string) => void;
 }) {
   const [matches, setMatches] = useState<Matches | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -70,6 +102,53 @@ export function MatchDrawer({
       // A browser refusing storage is not a reason to stop quoting.
     }
   }
+
+  // How the list is worked: chips, search, sort, grouped or one list.
+  const [selection, setSelection] = useState<VariantSelection>({});
+  const [query, setQuery] = useState("");
+  const [sort, setSort] = useState<PriceSort>("best");
+  const [layout, setLayout] = useState<"grouped" | "flat">(savedLayout);
+
+  function changeLayout(value: "grouped" | "flat") {
+    setLayout(value);
+    try {
+      window.localStorage.setItem(LAYOUT_KEY, value);
+    } catch {
+      // Not remembering the choice is fine.
+    }
+  }
+
+  function toggleChip(dimension: VariantDimension, value: string) {
+    setSelection((current) => {
+      const chosen = current[dimension] ?? [];
+      const next = chosen.includes(value) ? chosen.filter((v) => v !== value) : [...chosen, value];
+      return { ...current, [dimension]: next };
+    });
+  }
+
+  const all = useMemo(() => (matches ? flatten(matches.groups) : []), [matches]);
+  const facets = useMemo(() => variantFacets(all), [all]);
+  const shown = useMemo(
+    () => all.filter((o) => passesVariants(o, selection) && passesSearch(o, query)),
+    [all, selection, query],
+  );
+  const counts = typeCounts(shown);
+  const filtering = query.trim() !== "" || Object.values(selection).some((v) => v && v.length);
+
+  // What is drawn, in order, with the serial each row gets. Numbering runs top to
+  // bottom across sections and is redone on every sort or filter.
+  const sections = useMemo(() => {
+    if (!matches) return [];
+    const visible = new Set(shown);
+    const list: { title: string | null; options: MatchOption[] }[] =
+      layout === "flat"
+        ? [{ title: null, options: sortOptions(shown, sort, matches.direction) }]
+        : Object.entries(matches.groups).map(([title, options]) => ({
+            title,
+            options: sortOptions(options.filter((o) => visible.has(o)), sort, matches.direction),
+          }));
+    return list.filter((section) => section.options.length > 0);
+  }, [matches, shown, layout, sort]);
 
   useEffect(() => {
     let cancelled = false;
@@ -100,6 +179,28 @@ export function MatchDrawer({
 
         <div className="subject-block">
           <h2>{offer.description}</h2>
+          {matches?.subject_counterparty_id && (
+            <p className="subject-party">
+              <span className="muted small">{direction === "fill" ? "Buyer" : "Seller"}</span>{" "}
+              {(direction === "fill" ? onBuyer : onSeller) ? (
+                <button
+                  className="link buyer-link"
+                  onClick={() =>
+                    (direction === "fill" ? onBuyer : onSeller)!(matches.subject_counterparty_id as string)
+                  }
+                  title={
+                    direction === "fill"
+                      ? "See everything this buyer wants and draft one email"
+                      : "See every lot this seller has and draft one email"
+                  }
+                >
+                  {matches.subject_counterparty_name ?? "Unnamed"} →
+                </button>
+              ) : (
+                <strong>{matches.subject_counterparty_name ?? "Unnamed"}</strong>
+              )}
+            </p>
+          )}
           <p>
             {direction === "fill" ? "wants" : "has"}{" "}
             <strong>{offer.quantity ?? "?"} pcs</strong>
@@ -139,21 +240,121 @@ export function MatchDrawer({
           </p>
         )}
 
-        {matches &&
-          Object.entries(matches.groups).map(([section, options]) => (
-            <section key={section} className="match-group">
-              <h3>{section}</h3>
-              {options.map((option, index) => (
-                <Option
-                  key={index}
-                  option={option}
-                  direction={matches.direction}
-                  markup={markup}
-                  onShowOffer={onShowOffer}
-                />
-              ))}
+        {matches && matches.total_options > 0 && (
+          <div className="ml-tools">
+            <div className="ml-counts" aria-label="Matches by type">
+              <span className="ml-count full">
+                <b>{counts.full}</b> Full
+              </span>
+              <span className="ml-count partial">
+                <b>{counts.partial}</b> Partial
+              </span>
+              <span className="ml-count near_miss">
+                <b>{counts.near_miss}</b> Near miss
+              </span>
+              {filtering && (
+                <span className="muted small">
+                  · showing {shown.length} of {all.length}
+                </span>
+              )}
+            </div>
+
+            <div className="ml-controls">
+              <input
+                className="ml-search"
+                type="search"
+                placeholder="Search this list…"
+                value={query}
+                onChange={(e) => setQuery(e.target.value)}
+              />
+              <select
+                value={sort}
+                onChange={(e) => setSort(e.target.value as PriceSort)}
+                aria-label="Sort"
+              >
+                <option value="best">Sort: best match</option>
+                <option value="price_asc">Price: low to high</option>
+                <option value="price_desc">Price: high to low</option>
+              </select>
+              <div className="seg" role="group" aria-label="Layout">
+                <button
+                  className={layout === "grouped" ? "on" : ""}
+                  onClick={() => changeLayout("grouped")}
+                >
+                  Grouped
+                </button>
+                <button
+                  className={layout === "flat" ? "on" : ""}
+                  onClick={() => changeLayout("flat")}
+                >
+                  Whole list
+                </button>
+              </div>
+            </div>
+
+            {facets.length > 0 && (
+              <div className="ml-facets">
+                {facets.map((facet) => (
+                  <div key={facet.dimension} className="ml-facet">
+                    <span className="ml-facet-label">{DIMENSION_LABEL[facet.dimension]}</span>
+                    {facet.values.map(({ value, count }) => {
+                      const on = (selection[facet.dimension] ?? []).includes(value);
+                      return (
+                        <button
+                          key={value}
+                          className={`variant-chip${on ? " on" : ""}`}
+                          onClick={() => toggleChip(facet.dimension, value)}
+                          aria-pressed={on}
+                        >
+                          {value} <span className="n">{count}</span>
+                        </button>
+                      );
+                    })}
+                  </div>
+                ))}
+                {filtering && (
+                  <button
+                    className="link small"
+                    onClick={() => {
+                      setSelection({});
+                      setQuery("");
+                    }}
+                  >
+                    Clear filters
+                  </button>
+                )}
+              </div>
+            )}
+          </div>
+        )}
+
+        {matches && matches.total_options > 0 && shown.length === 0 && (
+          <p className="empty">No match in this list has the chosen variants.</p>
+        )}
+
+        {(() => {
+          let serial = 0;
+          return sections.map((section, i) => (
+            <section key={section.title ?? i} className="match-group">
+              {section.title && <h3>{section.title}</h3>}
+              {section.options.map((option) => {
+                serial += 1;
+                return (
+                  <Option
+                    key={option.rank ?? serial}
+                    serial={serial}
+                    option={option}
+                    direction={matches!.direction}
+                    markup={markup}
+                    onShowOffer={onShowOffer}
+                    onBuyer={onBuyer}
+                    onSeller={onSeller}
+                  />
+                );
+              })}
             </section>
-          ))}
+          ));
+        })()}
       </aside>
     </div>
   );
@@ -161,15 +362,24 @@ export function MatchDrawer({
 
 function Option({
   option,
+  serial,
   direction,
   markup,
   onShowOffer,
+  onBuyer,
+  onSeller,
 }: {
   option: MatchOption;
+  serial: number;
   direction: string;
   markup: number;
   onShowOffer?: (offerId: string, side: "sell" | "buy") => void;
+  onBuyer?: (buyerId: string) => void;
+  onSeller?: (sellerId: string) => void;
 }) {
+  const openLeg = direction === "place" ? onBuyer : onSeller;
+  const type = typeOf(option);
+  const price = unitPrice(option, direction);
   // Filling a requirement means every leg is a seller's lot; placing a lot means every
   // leg is a buyer's. The tab to open follows from the direction, not from the row.
   const legSide: "sell" | "buy" = direction === "fill" ? "sell" : "buy";
@@ -177,6 +387,8 @@ function Option({
     <div className={`option ${option.shortfall ? "short" : ""}`}>
       <div className="option-head">
         <span className="fill">
+          <span className="sr" title="Sr no">{serial}</span>
+          <span className={`type-pill ${type}`}>{TYPE_LABEL[type]}</span>
           {option.filled_quantity}
           {option.requested_quantity ? ` of ${option.requested_quantity}` : ""} units
           {option.supplier_count > 1 && (
@@ -187,6 +399,12 @@ function Option({
           )}
         </span>
 
+        {price !== null && (
+          <span className="unit-price" title="Per unit, as the list is sorted">
+            {money(price, option.allocations[0]?.currency)}
+            <span className="muted small"> /unit</span>
+          </span>
+        )}
         <span className={option.total_margin === null ? "muted" : "margin"}>
           {option.total_margin === null
             ? "margin unknown"
@@ -201,7 +419,23 @@ function Option({
           {option.allocations.map((a, i) => (
             <tr key={i}>
               <td className="num">{a.quantity}</td>
-              <td className="who">{a.counterparty_name ?? a.counterparty_id}</td>
+              <td className="who">
+                {openLeg ? (
+                  <button
+                    className="link buyer-link"
+                    onClick={() => openLeg(a.counterparty_id)}
+                    title={
+                      direction === "place"
+                        ? "See everything this buyer wants and draft one email"
+                        : "See every lot this seller has and draft one email"
+                    }
+                  >
+                    {a.counterparty_name ?? a.counterparty_id}
+                  </button>
+                ) : (
+                  (a.counterparty_name ?? a.counterparty_id)
+                )}
+              </td>
               <td className="desc" title={a.description}>
                 {onShowOffer ? (
                   <button
@@ -214,6 +448,7 @@ function Option({
                 ) : (
                   a.description
                 )}
+                {specLine(a) && <div className="leg-spec">{specLine(a)}</div>}
               </td>
               <td className="num price">{money(a.unit_price, a.currency)}</td>
             </tr>
