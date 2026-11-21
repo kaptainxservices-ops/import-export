@@ -103,9 +103,16 @@ function Board({ email }: { email: string }) {
   }
 
   const newCounterparties = useNewCounterparties(email, tab === "suppliers");
-  const matchAlerts = useMatchAlerts(email, tab === "matches", (row) =>
+  const matchAlerts = useMatchAlerts(email, (row) =>
     row ? openRequirement(row) : showNewMatches(),
   );
+
+  // A new match stops being new once its options are opened -- from the board, a toast,
+  // the Buyers tab or a buyer's panel alike. Opening the Matches screen alone does not.
+  const { markSeen } = matchAlerts;
+  useEffect(() => {
+    if (matching?.side === "buy") markSeen(matching.id);
+  }, [matching, markSeen]);
 
   // The count sits in the nav so a waiting email is visible from any screen. Fetched
   // once and again after each resolution, which is the only thing that changes it.
@@ -140,7 +147,7 @@ function Board({ email }: { email: string }) {
           >
             Matches
             {matchAlerts.unseenCount > 0 && (
-              <span className="nav-count new" title="New matches since you last looked">
+              <span className="nav-count new" title="New matches you have not opened yet">
                 {matchAlerts.unseenCount}
               </span>
             )}
@@ -214,6 +221,20 @@ function Board({ email }: { email: string }) {
             from nothing and waited for a full load; now it is exactly as it was left,
             and realtime keeps it current in the background. */}
         <div hidden={tab !== "matches"}>
+          {matchAlerts.unseenCount > 0 && (
+            <div className="unseen-bar">
+              <span>
+                <b>{matchAlerts.unseenCount}</b> new match{matchAlerts.unseenCount === 1 ? "" : "es"}{" "}
+                you have not opened yet, tagged NEW below.
+              </span>
+              <button className="link" onClick={() => setMatchSort("new")}>
+                Show newest first
+              </button>
+              <button className="link" onClick={matchAlerts.markAllSeen}>
+                Mark all as seen
+              </button>
+            </div>
+          )}
           <MatchBoard
             onOpen={openRequirement}
             onBuyer={openBuyer}

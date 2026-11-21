@@ -1972,3 +1972,18 @@ tr.is-new td { background: var(--accent-soft); }
 .cl-table td { padding: 9px 12px; border-bottom: 1px solid var(--line); vertical-align: top; }
 .cl-table tbody tr { cursor: pointer; }
 .cl-table tbody tr:hover { background: var(--hover); }
+
+.unseen-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 16px;
+  margin-bottom: 12px;
+  padding: 9px 14px;
+  border: 1px solid var(--accent-line);
+  background: var(--accent-soft);
+  border-radius: var(--radius-sm);
+  font-size: 13px;
+  color: var(--accent-ink);
+}
+.unseen-bar span { margin-right: auto; }
